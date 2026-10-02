@@ -84,7 +84,10 @@ then commits it.
   4. transactions
   5. events
   6. errors
-  7. multi-stage Dockerfile, and docker-compose with healthchecks
+  7. multi-stage Dockerfile, and docker-compose with healthchecks. RabbitMQ's `guest` user only
+     works from loopback, so the app container can't use it: set `RABBITMQ_DEFAULT_USER`/`RABBITMQ_DEFAULT_PASS`
+     on the broker, and give the app env overrides (`SPRING_DATASOURCE_URL`, `SPRING_RABBITMQ_HOST`,
+     `SPRING_RABBITMQ_USERNAME`, `SPRING_RABBITMQ_PASSWORD`) pointing at the compose services.
 
 ## Stage 4: Test (deep)
 - Write `docs/test-plan.md` with `engineering:testing-strategy`. Every API error in the PDF maps to a test.
