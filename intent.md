@@ -57,9 +57,9 @@ front-end / UI.
 6. The README covers build and run instructions, key design choices, a measured
    TPS estimate, horizontal scaling considerations, and how AI was used.
 
-## Open questions (resolve in Design)
-- Event mechanism: publish-after-commit or transactional outbox (driven by #4).
-- Event granularity: one event per changed record, or one per operation?
-- Amount precision: 2 decimals for all four currencies?
-- "Invalid account" on Get transactions: 404 like Get account, or 400?
-- Should a zero amount be rejected? The spec only says negative.
+## Open questions: resolved in Design
+- Event mechanism: transactional outbox ([ADR-0003](docs/adr/0003-event-delivery-outbox.md)).
+- Event granularity: one event per changed record ([ADR-0004](docs/adr/0004-event-granularity.md)).
+- Amount precision: 2 decimals for all four currencies; more decimals are rejected, never rounded ([ADR-0001](docs/adr/0001-money-handling.md)).
+- "Invalid account" on Get transactions: 404 for an unknown ID, 400 for a malformed one ([design.md §3](docs/design.md#3-error-contract)).
+- Zero amount: rejected, as a deliberate deviation from the PDF ([design.md §7](docs/design.md#7-deviations-from-the-pdf)).

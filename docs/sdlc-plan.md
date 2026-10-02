@@ -14,8 +14,8 @@ then commits it.
 |---|---|---|
 | 0. Setup | ✅ Done | JDK 25 (Temurin), Docker Desktop, gh CLI, IntelliJ + Claude Code plugin |
 | 1. Plan | ✅ Done | `intent.md` |
-| 2. Design | ⏭ Next | `docs/design.md`, `docs/adr/*.md` |
-| 3. Build | ⬜ | code, `CLAUDE.md`, `.claude/skills/`, `.claude/agents/` |
+| 2. Design | ✅ Done | `docs/design.md`, `docs/adr/*.md` |
+| 3. Build | ⏭ Next | code, `CLAUDE.md`, `.claude/skills/`, `.claude/agents/` |
 | 4. Test | ⬜ | tests, JaCoCo gate, `docs/test-plan.md`, contract check, k6 load test |
 | 5. Deploy | ⬜ | hooks, PR review loop, `.github/workflows/ci.yml` |
 | 6. Maintain | ⬜ | `docs/retro.md`, final README |
@@ -54,7 +54,7 @@ then commits it.
 1. **Ground in facts:** use context7 to look up current Spring Boot 4, MyBatis, Spring AMQP and springdoc APIs.
 2. **Draft** `docs/design.md` with `engineering:system-design`. It covers:
    - API: `POST /accounts`, `GET /accounts/{id}`, `POST /accounts/{id}/transactions`, `GET /accounts/{id}/transactions`, plus Swagger UI
-   - error mapping: RFC 7807 `ProblemDetail`, with 400 for validation, 404 for not found and 422 for insufficient funds
+   - error mapping: RFC 9457 `ProblemDetail`, with 400 for validation, 404 for not found and 422 for insufficient funds
    - data model: `account`, `balance` with `UNIQUE(account_id, currency)` and `NUMERIC(19,2)`, `transaction` with `balance_after`
    - schema migrations: Flyway
    - event contract: a topic exchange `banking.events`
