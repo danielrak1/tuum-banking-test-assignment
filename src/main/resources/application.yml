@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: banking
+  datasource:
+    url: jdbc:postgresql://localhost:5432/banking
+    username: banking
+    password: banking
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest
+    publisher-confirm-type: correlated   # ADR-0003
+
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
