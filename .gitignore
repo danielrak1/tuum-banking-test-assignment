@@ -1,0 +1,19 @@
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Gradle / build output
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# OS
+.DS_Store
+
+# Local env / secrets
+.env
+*.local
+
+# Claude Code: personal settings stay local, shared settings are committed
+.claude/settings.local.json
