@@ -18,7 +18,7 @@ Use a **transactional outbox**:
 
 1. **Write events in the business transaction.** The service inserts its event rows into
    `outbox_event` in the *same* transaction as the change. They go in after the balance update, so
-   rows are in commit order per account.
+   rows are in commit order per balance (account + currency).
 2. **Poll and publish.** A `@Scheduled` poller runs every ~200 ms. Each run:
    1. Opens a transaction and calls `pg_try_advisory_xact_lock(<outbox key>)`. If the lock is not
       acquired, it returns immediately, because another instance is publishing.
@@ -68,7 +68,7 @@ event for good. That fails criterion 4 by construction, and retries in memory do
 |---|---|
 | Complexity | Medium. One table, one scheduled publisher. |
 | Cost | Extra insert per event; up to ~200 ms publish latency |
-| Scalability | Safe with N instances: advisory lock means one publisher at a time, in order |
+| Scalability | Safe with N instances: advisory lock means one publisher at a time, in `id` order |
 | Team familiarity | Medium. A well-known pattern. |
 
 **Pros:**
@@ -98,10 +98,11 @@ a designed contract unless it is combined with an outbox anyway.
 - **Costs of C:**
   - Duplicates are handled by the `eventId` contract.
   - Latency (~200 ms) is acceptable for downstream consumers.
-  - The single active publisher is acceptable at this scale, and it is what keeps ordering strict.
+  - The single active publisher is acceptable at this scale, and it is what keeps per-balance
+    ordering intact.
 - **The advisory lock:** it costs one SQL call. Without it, N instances would publish the same
   rows concurrently: more duplicates, and events out of order. With it, the README can say
-  "scale the API horizontally; publishing stays ordered".
+  "scale the API horizontally; events stay ordered per balance".
 
 ## Consequences
 - **Easier:**
@@ -111,6 +112,11 @@ a designed contract unless it is combined with an outbox anyway.
   - Consumers must be idempotent.
   - Tests must wait for asynchronous publication (Awaitility), not assert immediately.
   - Event throughput is capped by one poller; the README notes this under scaling.
+  - **Ordering is per balance (account + currency), not global.** `outbox_event.id` is assigned
+    at insert, not at commit, so two transactions on different balances can commit in one order
+    and publish in the other. Writers on the same balance serialise on its row lock and insert
+    their outbox rows after the update, so their `id`s follow commit order. Consumers must not
+    assume a global order across accounts or currencies.
 - **Revisit:**
   - `LISTEN/NOTIFY` to wake the poller right after commit (lower latency).
   - Parallel publishing partitioned by `account_id` if one publisher becomes the bottleneck.

@@ -52,7 +52,7 @@ an ADR in [`docs/adr/`](adr/):
 | POST | `/accounts` | 201 + `Location` | `{customerId, country, currencies[]}` → Account |
 | GET | `/accounts/{accountId}` | 200 | Account |
 | POST | `/accounts/{accountId}/transactions` | 201 | `{amount, currency, direction, description}` → Transaction |
-| GET | `/accounts/{accountId}/transactions` | 200 | `Transaction[]`, oldest first; `[]` if none |
+| GET | `/accounts/{accountId}/transactions` | 200 | `Transaction[]` in insert order (`seq`); `[]` if none |
 
 ```jsonc
 // Account
@@ -149,12 +149,13 @@ CREATE TABLE account_transaction (
     amount        numeric(19,2) NOT NULL CHECK (amount > 0),
     description   varchar(255)  NOT NULL,
     balance_after numeric(19,2) NOT NULL,
+    seq           bigserial     NOT NULL,   -- list order
     created_at    timestamptz   NOT NULL DEFAULT now()
 );
-CREATE INDEX account_transaction_account_idx ON account_transaction (account_id, created_at, id);
+CREATE INDEX account_transaction_account_idx ON account_transaction (account_id, seq);
 
 CREATE TABLE outbox_event (
-    id          bigserial    PRIMARY KEY,   -- publish order
+    id          bigserial    PRIMARY KEY,   -- publish order (per balance = commit order)
     event_id    uuid         NOT NULL UNIQUE,
     routing_key varchar(64)  NOT NULL,
     payload     jsonb        NOT NULL,
@@ -165,7 +166,11 @@ CREATE TABLE outbox_event (
 - **`balance`:** the composite primary key enforces one balance per currency per account.
   `CHECK (available_amount >= 0)` is a backstop behind ADR-0002.
 - **`account_transaction`:** named this way to avoid quoting the SQL keyword `transaction`. Its
-  `balance_after` comes from the `RETURNING` clause of the balance update.
+  `balance_after` comes from the `RETURNING` clause of the balance update. GET transactions orders
+  by `seq`, not `created_at`: `now()` is the *transaction start* time, so it can disagree with the
+  order rows were written, and ties would fall back to a random UUID. `seq` is assigned at insert,
+  after the balance update, while the balance row lock is held, so per balance `seq` order is
+  commit order and `balance_after` reads as a running balance.
 - **`outbox_event`:** a row is deleted once the broker confirms the message (ADR-0003). The table
   is infrastructure, not a domain record, so it is excluded from "every insert/update is published".
 
@@ -177,7 +182,7 @@ CREATE TABLE outbox_event (
 | Messages | JSON, persistent, `content_type=application/json`, `message_id = eventId` |
 | Demo queue | `banking.events.all`, bound to `#`, so events are visible in the RabbitMQ UI (localhost:15672). Real consumers declare and own their own queues. |
 | Delivery | At-least-once. Consumers must dedupe on `eventId`. |
-| Ordering | Events are published in commit order (outbox `id`); see ADR-0003. |
+| Ordering | Ordered per balance (account + currency), by outbox `id`. Not a global commit order: see ADR-0003. |
 
 Every message uses this envelope:
 ```json
@@ -202,8 +207,8 @@ The full test plan is Stage 4 (`docs/test-plan.md`). The design commits to these
   - Setup: an account with opening balance B. Fire N concurrent `OUT`s of amount a, mixed with `IN`s.
   - Assert the stored balance never goes below 0.
   - Assert that, with no `IN`s, exactly ⌊B/a⌋ `OUT`s succeed and the rest return 422.
-  - Assert opening balance + Σ transactions = final balance, and the last `balanceAfter` equals
-    the stored balance.
+  - Assert opening balance + Σ transactions = final balance, and the last `balanceAfter` by `seq`
+    equals the stored balance.
 - **Criterion 4, events are never lost.**
   - `docker pause` the RabbitMQ container. Pausing keeps the mapped port, so the app can reconnect;
     a stop/start would give the broker a new port.

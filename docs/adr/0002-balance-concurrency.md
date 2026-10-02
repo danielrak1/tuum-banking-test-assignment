@@ -31,6 +31,8 @@ Inside one `@Transactional` service call (PostgreSQL default, READ COMMITTED):
      deleted, so this is the only possible reason.
    - **1 row:** the returned value is `balanceAfter`.
 3. **Insert `account_transaction`** with that `balance_after`, then the outbox rows (ADR-0003).
+   Both are inserted while the balance row lock is held, so their `bigserial` values (`seq`,
+   outbox `id`) follow commit order for that balance.
 4. **Backstop:** `CHECK (available_amount >= 0)` on `balance`. If the code ever got the condition
    wrong, the database would still refuse a negative balance.
 
@@ -109,5 +111,6 @@ reintroduces the race.
 1. [ ] Add the `BalanceMapper.applyDelta(accountId, currency, delta)` mapper method, returning `Optional<BigDecimal>`.
 2. [ ] Add `CHECK (available_amount >= 0)` in `V1__init.sql`.
 3. [ ] Write the concurrency integration test (design.md §6): N parallel `OUT`s mixed with `IN`s.
-   Assert the balance never goes below 0, that exactly ⌊B/a⌋ `OUT`s succeed, and that the sums reconcile.
+   Assert the balance never goes below 0, that exactly ⌊B/a⌋ `OUT`s succeed, that the sums reconcile,
+   and that the last `balanceAfter` by `seq` equals the stored balance.
 4. [ ] Add to `CLAUDE.md`: "balances change only through `applyDelta`".
