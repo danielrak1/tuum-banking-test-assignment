@@ -15,7 +15,7 @@ then commits it.
 | 0. Setup | ✅ Done | JDK 25 (Temurin), Docker Desktop, gh CLI, IntelliJ + Claude Code plugin |
 | 1. Plan | ✅ Done | `intent.md` |
 | 2. Design | ✅ Done | `docs/design.md`, `docs/adr/*.md` |
-| 3. Build | ⏭ Next | code, `CLAUDE.md`, `.claude/skills/`, `.claude/agents/` |
+| 3. Build | 🚧 In progress: tasks 1–2 of 7 done (skeleton PR #1, create/get account PR #2) | code, `CLAUDE.md`, `.claude/skills/add-endpoint`, `.claude/agents/test-writer.md` |
 | 4. Test | ⬜ | tests, JaCoCo gate, `docs/test-plan.md`, contract check, k6 load test |
 | 5. Deploy | ⬜ | hooks, PR review loop, `.github/workflows/ci.yml` |
 | 6. Maintain | ⬜ | `docs/retro.md`, final README |
@@ -82,8 +82,12 @@ then commits it.
   2. schema
   3. create/get account
   4. transactions
-  5. events
-  6. errors
+  5. events. Also: give the outbox its own explicitly configured `JsonMapper`, so a
+     `spring.jackson.*` change to the HTTP mapper can't silently change the §5 event format
+     (task 2 review, finding H).
+  6. errors. Includes design.md §3 rule 4: map Jackson parse errors by field path to that field's
+     code (e.g. `"amount": "abc"` → `INVALID_AMOUNT`), with a one-entry `errors[]`. Until then every
+     parse error is `VALIDATION_FAILED` (task 2 review, finding F).
   7. multi-stage Dockerfile, and docker-compose with healthchecks. RabbitMQ's `guest` user only
      works from loopback, so the app container can't use it: set `RABBITMQ_DEFAULT_USER`/`RABBITMQ_DEFAULT_PASS`
      on the broker, and give the app env overrides (`SPRING_DATASOURCE_URL`, `SPRING_RABBITMQ_HOST`,

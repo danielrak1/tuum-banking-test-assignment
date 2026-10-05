@@ -49,8 +49,11 @@ Schema lives in `src/main/resources/db/migration/` and Flyway applies it on star
   `code` from the table there. Validation, then account existence, then business rules.
   Bind `currency`/`direction` as `String`, not enums.
 - **IDs** are UUIDs generated in the application. Transaction lists are ordered by `seq`, not `created_at`.
+  Path IDs: canonical UUID only (strict binder `api.StrictUuidBinding`; a `Converter` won't do, because
+  Spring falls back to the lenient `UUIDEditor` when it fails). Every handler with a UUID path
+  variable needs `@NotFoundCode` (`NotFoundCodeConventionTest` enforces it).
 - **Migrations:** never edit an applied Flyway migration; add `V<n>__*.sql`.
-- **Tests:** Testcontainers against real Postgres and RabbitMQ, never H2 or mocked brokers. Every
-  integration test uses `@Import(TestcontainersConfiguration.class)`: no per-class `@Container`
-  fields or extra context config, so the cached context and its containers are shared. Event
-  assertions wait with Awaitility; publishing is asynchronous.
+- **Tests:** Testcontainers against real Postgres and RabbitMQ, never H2 or mocked brokers. Annotate
+  integration tests with `@IntegrationTest` and nothing that changes the context (no per-class
+  `@Container` fields, `@MockitoBean`, `@TestPropertySource` or extra config), so the cached context
+  and its containers are shared. Event assertions wait with Awaitility; publishing is asynchronous.

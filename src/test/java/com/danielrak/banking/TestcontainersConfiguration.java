@@ -7,9 +7,9 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.rabbitmq.RabbitMQContainer;
 
 /**
- * Shared Postgres and RabbitMQ containers for integration tests. Import it with
- * {@code @Import(TestcontainersConfiguration.class)}: Spring's test context cache then reuses one
- * context, and so one pair of containers, across every test class with the same configuration.
+ * Shared Postgres and RabbitMQ containers for integration tests. Don't import it directly; use
+ * {@link IntegrationTest}, so Spring's test context cache reuses one context, and so one pair of
+ * containers, across every test class.
  * Images match docker-compose.yml.
  */
 @TestConfiguration(proxyBeanMethods = false)
