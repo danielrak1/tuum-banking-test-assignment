@@ -82,8 +82,12 @@ then commits it.
   2. schema
   3. create/get account
   4. transactions
-  5. events
-  6. errors
+  5. events. Also: give the outbox its own explicitly configured `JsonMapper`, so a
+     `spring.jackson.*` change to the HTTP mapper can't silently change the §5 event format
+     (task 2 review, finding H).
+  6. errors. Includes design.md §3 rule 4: map Jackson parse errors by field path to that field's
+     code (e.g. `"amount": "abc"` → `INVALID_AMOUNT`), with a one-entry `errors[]`. Until then every
+     parse error is `VALIDATION_FAILED` (task 2 review, finding F).
   7. multi-stage Dockerfile, and docker-compose with healthchecks. RabbitMQ's `guest` user only
      works from loopback, so the app container can't use it: set `RABBITMQ_DEFAULT_USER`/`RABBITMQ_DEFAULT_PASS`
      on the broker, and give the app env overrides (`SPRING_DATASOURCE_URL`, `SPRING_RABBITMQ_HOST`,

@@ -1,6 +1,7 @@
 # Task 2: Create / get account (`feat/account-api`)
 
-> **Status:** plan agreed 2026-10-02; implementation not started.
+> **Status:** done 2026-10-05. Built, tested (`./gradlew check` green: lines 0.98, branches 0.88),
+> reviewed (`/code-review` + silent-failure-hunter; findings A–E, K fixed; F, H deferred to tasks 6, 5).
 
 ## Context
 This is Stage 3, task 2 of 7 in `docs/sdlc-plan.md`. The skeleton (PR #1) is merged: schema V1, compose,
