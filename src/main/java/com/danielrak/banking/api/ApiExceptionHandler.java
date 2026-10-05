@@ -5,6 +5,8 @@ import com.danielrak.banking.domain.CurrencyNotOpenException;
 import com.danielrak.banking.domain.InsufficientFundsException;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,6 +37,13 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
 public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
+
+    /** Field-specific codes by constraint (design.md §3); any other constraint gives {@code VALIDATION_FAILED}. */
+    private static final Map<String, ErrorCode> FIELD_CODES = Map.of(
+            SupportedCurrency.class.getSimpleName(), ErrorCode.INVALID_CURRENCY,
+            SupportedDirection.class.getSimpleName(), ErrorCode.INVALID_DIRECTION,
+            ValidAmount.class.getSimpleName(), ErrorCode.INVALID_AMOUNT,
+            DescriptionPresent.class.getSimpleName(), ErrorCode.DESCRIPTION_MISSING);
 
     /** One entry of {@code errors[]}. */
     record FieldProblem(String field, ErrorCode code, String message) {
@@ -147,18 +156,9 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         };
     }
 
-    /**
-     * A field's code comes from its constraint (design.md §3); {@code getCode()} is the constraint's
-     * simple name. Each field-specific code has its own constraint; any other gives {@code VALIDATION_FAILED}.
-     */
+    /** A field's code comes from its constraint; {@code getCode()} is the constraint's simple name. */
     private static ErrorCode codeFor(ObjectError error) {
-        return switch (error.getCode()) {
-            case "SupportedCurrency" -> ErrorCode.INVALID_CURRENCY;
-            case "SupportedDirection" -> ErrorCode.INVALID_DIRECTION;
-            case "ValidAmount" -> ErrorCode.INVALID_AMOUNT;
-            case "DescriptionPresent" -> ErrorCode.DESCRIPTION_MISSING;
-            case null, default -> ErrorCode.VALIDATION_FAILED;
-        };
+        return FIELD_CODES.getOrDefault(Objects.requireNonNullElse(error.getCode(), ""), ErrorCode.VALIDATION_FAILED);
     }
 
     private static ProblemDetail problem(HttpStatus status, String detail, ErrorCode code) {

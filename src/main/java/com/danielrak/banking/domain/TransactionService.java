@@ -47,9 +47,13 @@ public class TransactionService {
         // (10.500 → 10.50, 1E+2 → 100.00); UNNECESSARY asserts that (ADR-0001).
         BigDecimal scaled = amount.setScale(2, RoundingMode.UNNECESSARY);
         BigDecimal delta = direction == Direction.IN ? scaled : scaled.negate();
-        // The balance row exists (checked above, never deleted), so no row means not enough funds.
+        // The balance row exists (checked above, never deleted), so no row means an OUT lacked funds.
+        // An IN can't fail the condition; if one matches no row, an invariant broke: fail as a logged 500.
         BigDecimal balanceAfter = balanceMapper.applyDelta(accountId, currency, delta)
-                .orElseThrow(() -> new InsufficientFundsException(accountId, currency));
+                .orElseThrow(() -> direction == Direction.OUT
+                        ? new InsufficientFundsException(accountId, currency)
+                        : new IllegalStateException("applyDelta matched no " + currency + " balance for an IN on account "
+                                + accountId));
 
         Transaction transaction = new Transaction(UUID.randomUUID(), accountId, scaled, currency, direction,
                 description, balanceAfter);

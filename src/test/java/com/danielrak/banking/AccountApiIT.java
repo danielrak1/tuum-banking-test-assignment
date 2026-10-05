@@ -14,6 +14,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
 import org.assertj.core.api.SoftAssertions;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -171,7 +172,70 @@ class AccountApiIT {
                         "customerId", c),
                 Arguments.of("DEL raw in customerId",
                         "{\"customerId\": \"%s\u007Fx\", \"country\": \"EE\", \"currencies\": [\"EUR\"]}".formatted(c),
+                        "customerId", c),
+                // §2 free-text rule: C1 controls, line/paragraph separators and unpaired UTF-16
+                // surrogates, sent as JSON escapes so the exact UTF-16 reaches the server.
+                Arguments.of("NEL U+0085 in customerId",
+                        "{\"customerId\": \"%sx\\u0085y\", \"country\": \"EE\", \"currencies\": [\"EUR\"]}".formatted(c),
+                        "customerId", c),
+                Arguments.of("U+009F in customerId",
+                        "{\"customerId\": \"%sx\\u009Fy\", \"country\": \"EE\", \"currencies\": [\"EUR\"]}".formatted(c),
+                        "customerId", c),
+                Arguments.of("U+2028 in customerId",
+                        "{\"customerId\": \"%sx\\u2028y\", \"country\": \"EE\", \"currencies\": [\"EUR\"]}".formatted(c),
+                        "customerId", c),
+                Arguments.of("U+2029 in customerId",
+                        "{\"customerId\": \"%sx\\u2029y\", \"country\": \"EE\", \"currencies\": [\"EUR\"]}".formatted(c),
+                        "customerId", c),
+                Arguments.of("unpaired high surrogate in customerId",
+                        "{\"customerId\": \"%sx\\ud800y\", \"country\": \"EE\", \"currencies\": [\"EUR\"]}".formatted(c),
+                        "customerId", c),
+                Arguments.of("unpaired low surrogate in customerId",
+                        "{\"customerId\": \"%sx\\udc00y\", \"country\": \"EE\", \"currencies\": [\"EUR\"]}".formatted(c),
+                        "customerId", c),
+                Arguments.of("reversed surrogate pair in customerId",
+                        "{\"customerId\": \"%sx\\ude00\\ud83dy\", \"country\": \"EE\", \"currencies\": [\"EUR\"]}".formatted(c),
                         "customerId", c));
+    }
+
+    @Test
+    void acceptsCustomerIdWithSurrogatePairAndStoresItUnchanged() {
+        // §2: free text is stored exactly as sent; a valid surrogate pair (an emoji) is not rejected.
+        String prefix = uniqueCustomerId();
+        String customerId = prefix + " Pay 😀";
+        EntityExchangeResult<String> result = post("""
+                {"customerId": "%s Pay \\ud83d\\ude00", "country": "EE", "currencies": ["EUR"]}
+                """.formatted(prefix));
+        assertThat(result.getStatus().value()).as(result.getResponseBody()).isEqualTo(201);
+        JsonNode body = JSON.readTree(result.getResponseBody());
+        String accountId = body.get("accountId").asString();
+        assertThat(body.get("customerId").asString()).isEqualTo(customerId);
+
+        JsonNode fetched = JSON.readTree(get(accountId).getResponseBody());
+        assertThat(fetched.get("customerId").asString()).isEqualTo(customerId);
+
+        String eventCustomerId = jdbc.queryForObject("""
+                SELECT payload->'data'->>'customerId' FROM outbox_event
+                WHERE payload->>'accountId' = ? AND routing_key = 'account.created'
+                """, String.class, accountId);
+        assertThat(eventCustomerId).isEqualTo(customerId);
+    }
+
+    @Test
+    @Disabled("task 6: reject scalar coercion into strings, §3 rule 4")
+    void rejectsNumericCustomerIdWithValidationFailed() {
+        JsonNode problem = expectProblem(post("""
+                {"customerId": 12345, "country": "EE", "currencies": ["EUR"]}
+                """), 400, "VALIDATION_FAILED");
+        List<JsonNode> errors = errors(problem);
+        assertThat(errors).hasSize(1);
+        assertThat(errors.get(0).get("field").asString()).isEqualTo("customerId");
+        assertThat(errors.get(0).get("code").asString()).isEqualTo("VALIDATION_FAILED");
+        Integer created = jdbc.queryForObject("""
+                SELECT count(*) FROM outbox_event
+                WHERE routing_key = 'account.created' AND payload->'data'->>'customerId' = '12345'
+                """, Integer.class);
+        assertThat(created).isZero();
     }
 
     @Test

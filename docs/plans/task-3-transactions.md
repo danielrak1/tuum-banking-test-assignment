@@ -1,8 +1,8 @@
 # Task 3: Transactions (`feat/transactions`)
 
-> **Status:** built and tested 2026-10-05. `./gradlew check` is green: 122 tests, 2 skipped by
-> design (decision 2); lines 0.99, branches 0.93. Not committed yet; the SKILL.md revision is
-> proposed and awaiting review.
+> **Status:** built, tested and reviewed 2026-10-05. Reviewed with `/code-review` and
+> silent-failure-hunter: findings A–J are fixed, and the rest are deferred (see "Review" below).
+> The SKILL.md revision is applied.
 
 ## Context
 This is Stage 3, task 3 of 7 in `docs/sdlc-plan.md`. Task 2 (PR #2) shipped create/get account, the
@@ -28,8 +28,8 @@ code, including for a missing value, so every field gets a constraint whose viol
 |---|---|---|
 | `currency` | `@SupportedCurrency String` (reused, already rejects null) | `INVALID_CURRENCY` |
 | `direction` | new `@SupportedDirection String`: rejects null, `IN`/`OUT` case-sensitive | `INVALID_DIRECTION` |
-| `amount` | new `@ValidAmount BigDecimal`: composes `@NotNull @Positive @Digits(integer=17, fraction=2)` with `@ReportAsSingleViolation` | `INVALID_AMOUNT` |
-| `description` | new `@DescriptionPresent` (composes `@NotBlank`, `@ReportAsSingleViolation`), plus `@Size(max=255) @FreeText` | `DESCRIPTION_MISSING` / `VALIDATION_FAILED` |
+| `amount` | new `@ValidAmount BigDecimal`, with a custom validator (decision 7; the first plan composed `@Digits`, which counts trailing zeros) | `INVALID_AMOUNT` |
+| `description` | new `@DescriptionPresent`, with a custom validator (review D: Unicode spaces count as blank), plus `@Size(max=255) @FreeText` | `DESCRIPTION_MISSING` / `VALIDATION_FAILED` |
 
 - Why a custom `@DescriptionPresent` rather than mapping `@NotBlank`: `customerId` also uses
   `@NotBlank` and must stay `VALIDATION_FAILED`.
@@ -192,7 +192,7 @@ propose a revised SKILL.md as a diff for your review. Known so far:
 
 ## Files
 - **New:**
-  - `api/{TransactionController, CreateTransactionRequest, TransactionResponse, SupportedDirection(+Validator), ValidAmount, DescriptionPresent}`;
+  - `api/{TransactionController, CreateTransactionRequest, TransactionResponse, SupportedDirection(+Validator), ValidAmount(+Validator), DescriptionPresent(+Validator)}`;
   - `domain/{Direction, Transaction, TransactionService, CurrencyNotOpenException, InsufficientFundsException}`;
   - `persistence/TransactionMapper`;
   - `messaging/{TransactionCreatedData, BalanceUpdatedData}`;
@@ -200,6 +200,28 @@ propose a revised SKILL.md as a diff for your review. Known so far:
   - `docs/plans/task-3-transactions.md` (this plan, saved first).
 - **Changed:** `ApiExceptionHandler` (`codeFor`, two 422 handlers), `BalanceMapper`, `EventTypes`,
   `docs/design.md`, `docs/sdlc-plan.md`, and `.claude/skills/add-endpoint/SKILL.md` (after your review).
+
+## Review (`/code-review` + silent-failure-hunter, 2026-10-05)
+Fixed in this task:
+- **A:** `consumes`/`produces` on every mapping. Before, an `Accept: application/xml` OUT committed
+  the debit and then returned 406; an `application/vnd.x+json` body was accepted, not 415.
+- **B, C:** `@FreeText` also rejects unpaired surrogates (stored as `?` before), C1 controls (U+0085
+  included) and U+2028/U+2029.
+- **D:** `@DescriptionPresent` treats Unicode spaces (U+00A0, U+2007, U+202F) as blank.
+- **E:** an IN that matches no balance row is a logged 500 (broken invariant), not `INSUFFICIENT_FUNDS`.
+- **F:** `codeFor` maps constraints by class, so a rename can't silently fall back to `VALIDATION_FAILED`.
+- **G:** `local-cache-scope: statement` replaces `applyDelta`'s `flushCache` option.
+- **H:** `NotFoundCodeConventionTest` checks that the UUID `@PathVariable` comes before `@RequestBody`.
+- **I:** this plan is updated. **J:** design.md §8 is honest about balance overflow.
+
+Deferred (recorded in docs/sdlc-plan.md):
+- task 6: duplicate JSON keys and scalar coercion into strings (both with `@Disabled` tests), and
+  a 422 for balance overflow;
+- task 7: the springdoc schema (required fields, enums, `operationId`);
+- Stage 4: `@Size` counting UTF-16 code units, sharing the test helpers, and folding the two
+  existence checks into one query.
+
+Skipped: logging 422s.
 
 ## Verification
 1. `./gradlew check` is green: all tests, including the concurrency test, plus the JaCoCo gate.

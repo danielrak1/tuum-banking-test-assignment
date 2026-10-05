@@ -13,6 +13,7 @@ import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -33,8 +34,12 @@ public class TransactionController {
         this.transactionService = transactionService;
     }
 
-    /** 201 without {@code Location}: there is no endpoint for a single transaction (design.md §2). */
-    @PostMapping
+    /**
+     * 201 without {@code Location}: there is no endpoint for a single transaction (design.md §2).
+     * {@code consumes}/{@code produces} make a 415 or 406 happen before anything is posted, not after
+     * the transaction has committed.
+     */
+    @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     @NotFoundCode(ErrorCode.ACCOUNT_MISSING)
     @Operation(summary = "Post an IN or OUT transaction and return it with the balance after it")
     @ApiResponse(responseCode = "201", description = "Transaction posted; balanceAfter is the new balance")
@@ -58,7 +63,7 @@ public class TransactionController {
         return ResponseEntity.status(HttpStatus.CREATED).body(TransactionResponse.from(transaction));
     }
 
-    @GetMapping
+    @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
     @NotFoundCode(ErrorCode.INVALID_ACCOUNT)
     @Operation(summary = "List an account's transactions in the order they were posted")
     @ApiResponse(responseCode = "200", description = "The transactions, oldest first; [] if none")

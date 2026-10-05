@@ -33,9 +33,9 @@ Reference implementations:
   - Otherwise, every way the field can fail with that code must come from one constraint that
     `codeFor` maps. Reuse an existing one, or add one:
     - compose standard constraints under a new name with `@ReportAsSingleViolation` (as
-      `@DescriptionPresent` wraps `@NotBlank`). Mapping a standard constraint itself would change
-      its code on every field that uses it (`customerId` is `@NotBlank` too);
-    - or write a validator when the rule needs logic (`ValidAmountValidator`).
+      `@FreeText` wraps `@Pattern`). Mapping a standard constraint itself would change its code on
+      every field that uses it (`customerId` is `@NotBlank` too);
+    - or write a validator when the rule needs logic (`ValidAmountValidator`, `DescriptionPresentValidator`).
   - "Missing" counts: if §3 gives a missing field the field's code, that constraint must reject
     null itself, as `@SupportedCurrency` does, rather than a separate `@NotNull` that would give
     `VALIDATION_FAILED`.
@@ -54,8 +54,13 @@ Reference implementations:
   `@NotFoundCode(ErrorCode.…)` with that endpoint's §3 code (`ACCOUNT_NOT_FOUND`, `ACCOUNT_MISSING`
   or `INVALID_ACCOUNT`). It drives both the 400 for a malformed ID and the 404 for an unknown one.
   If it's missing, a 404 turns into a 500, and `NotFoundCodeConventionTest` fails the build.
+- **Declare `consumes`/`produces = MediaType.APPLICATION_JSON_VALUE`** on every mapping (`produces`
+  only for a GET). Spring then rejects a wrong `Content-Type` (415) or `Accept` (406) before the
+  handler runs. Without it, the 406 comes only when the response is written, after the write has
+  committed.
 - **Declare `@PathVariable` before `@RequestBody`.** Spring resolves arguments in declaration
   order, which is what makes a malformed path ID win over a bad body (§3 rule 1).
+  `NotFoundCodeConventionTest` enforces the order.
 - **Status:** 200 for a read. A create returns 201:
   - with `ResponseEntity.created(URI.create("/…/" + id))` only if a GET for the new resource exists;
   - otherwise with `ResponseEntity.status(HttpStatus.CREATED)`, and §2 says "no `Location`".
@@ -89,9 +94,10 @@ Reference implementations:
 - Results map into records by constructor argument name, and `snake_case` columns match
   `camelCase` arguments. A flat row that differs from the domain type gets its own `*Row` record.
   `UUID` and enums map automatically (`UuidTypeHandler`, MyBatis's enum-by-name handler).
-- **A write that returns a value** (`UPDATE … RETURNING`) is a `@Select` with
-  `@Options(flushCache = Options.FlushCachePolicy.TRUE)`. Without it, the session cache can replay
-  an earlier result for the same arguments within one transaction (see `applyDelta`).
+- **A write that returns a value** (`UPDATE … RETURNING`) is a `@Select` (see `applyDelta`). It is
+  safe only because the local cache is statement-scoped (`mybatis.configuration.local-cache-scope:
+  statement`). The default, session scope, would replay an earlier result for the same arguments
+  within one transaction instead of running the write.
 - Single-row lookups return `Optional<…>`. Existence checks are `SELECT EXISTS (…)` returning
   `boolean`. Lists need an explicit `ORDER BY`: transactions by `seq`, never `created_at`;
   balances by `currency`.

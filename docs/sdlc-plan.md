@@ -93,10 +93,22 @@ then commits it.
      parse error is `VALIDATION_FAILED` (task 2 review, finding F). Also reject a JSON string
      amount (`"10.50"`) with `INVALID_AMOUNT`: Jackson coerces it and accepts it today. Then remove
      `@Disabled` from the two task-6 tests in `TransactionApiIT` (task 3, decision 2).
+     From the task 3 review (each has a `@Disabled("task 6: …")` test in `TransactionApiIT`, unless noted):
+     - reject duplicate JSON keys (`StreamReadFeature.STRICT_DUPLICATE_DETECTION`). Today the last one
+       wins, so `"amount": 1.00, …, "amount": 5000.00` posts 5000.00;
+     - reject scalar coercion into string fields (a `CoercionConfig` for textual targets). Today
+       `"description": 42` or `"customerId": 12345` is stored as a string;
+     - a 422 instead of a 500 for an `IN` that would overflow `NUMERIC(19,2)` (design.md §8; no test yet,
+       because the code is still to be decided).
   7. multi-stage Dockerfile, and docker-compose with healthchecks. RabbitMQ's `guest` user only
      works from loopback, so the app container can't use it: set `RABBITMQ_DEFAULT_USER`/`RABBITMQ_DEFAULT_PASS`
      on the broker, and give the app env overrides (`SPRING_DATASOURCE_URL`, `SPRING_RABBITMQ_HOST`,
      `SPRING_RABBITMQ_USERNAME`, `SPRING_RABBITMQ_PASSWORD`) pointing at the compose services.
+     Also, springdoc (task 3 review): Swagger UI is how reviewers explore the API (intent.md), but
+     the OpenAPI schema doesn't show the validator-based rules. Add
+     `@Schema(requiredMode = REQUIRED, allowableValues = …)` on the request records, so `amount`,
+     `currency` and `direction` show as required with their enums. Also set explicit
+     `@Operation(operationId = …)`: today the two `create` methods collide as `create_1`.
 
 ## Stage 4: Test (deep)
 - Write `docs/test-plan.md` with `engineering:testing-strategy`. Every API error in the PDF maps to a test.
@@ -112,6 +124,14 @@ then commits it.
   - a test proving **events are never lost**
 - **Contract check** (`scripts/contract-check.sh`): runs every request and error case from the PDF against the running compose stack. This is our version of the playbook's "continuous evals".
 - **Throughput:** a k6 script, run through its Docker image, measures TPS and p95 latency. Results go in the README.
+- **Carried over from the task 3 review:**
+  - `@Size` counts UTF-16 code units, while design.md says characters and Postgres counts code
+    points. 128 emoji are rejected as more than 255. This only over-rejects. Decide whether to count
+    code points.
+  - Move `AccountApiIT` and `ProtocolErrorsIT` onto the shared `BankingApi` test helper. Their
+    private copies (`JSON`, `expectProblem`, `errors`, …) have already drifted.
+  - Throughput: fold `TransactionService.create`'s two existence checks (account, balance) into one
+    `SELECT EXISTS …, EXISTS …`, and use `AccountMapper.exists` instead of mapping the whole account row.
 - Write the **`verify` skill**, which chains all of the above.
 
 ## Stage 5: Deploy

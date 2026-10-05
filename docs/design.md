@@ -79,11 +79,14 @@ an ADR in [`docs/adr/`](adr/):
 | `currency` | One of `EUR`, `SEK`, `GBP`, `USD`, case-sensitive |
 | `direction` | `IN` or `OUT`, case-sensitive |
 | `amount` | JSON number, > 0, at most 2 decimals, at most 17 integer digits (`NUMERIC(19,2)`). Trailing zeros don't count: `10.500` is 10.50 and `1e2` is 100.00. The response always has scale 2. (`@ValidAmount`, ADR-0001) |
-| `description` | Free text: not blank, ≤ 255 characters |
+| `description` | Free text: not blank, ≤ 255 characters. Unicode spaces such as U+00A0 count as blank. |
 
-- **Free-text fields** (`customerId`, `description`) reject control characters (U+0000–U+001F,
-  U+007F), including NUL, which Postgres can't store in `varchar` or `jsonb`. Tabs and newlines
-  are control characters too, so both fields are single-line.
+- **Free-text fields** (`customerId`, `description`) are single-line and stored exactly as sent.
+  They reject:
+  - control characters (U+0000–U+001F, U+007F–U+009F), including tab, newline, NEL and NUL.
+    Postgres can't store NUL in `varchar` or `jsonb`;
+  - the line and paragraph separators U+2028 and U+2029;
+  - unpaired UTF-16 surrogates, which the JDBC driver would silently store as `?`.
 - **`currency` and `direction` are bound as `String`** and validated, not bound as Java enums.
   With enums, a bad value would fail inside Jackson as a generic parse error instead of returning
   the PDF's `INVALID_CURRENCY` / `INVALID_DIRECTION`.
@@ -114,12 +117,12 @@ Errors are RFC 9457 `ProblemDetail` (`application/problem+json`):
 | Supported currency, but the account has no balance in it | 422 | `INVALID_CURRENCY` | Invalid currency |
 | Direction missing, or not `IN`/`OUT` | 400 | `INVALID_DIRECTION` | Invalid direction |
 | Amount missing, unparseable, ≤ 0, more than 2 decimals, or more than 17 integer digits (trailing zeros don't count) | 400 | `INVALID_AMOUNT` | Invalid amount |
-| Description missing, blank, or whitespace only | 400 | `DESCRIPTION_MISSING` | Description missing |
+| Description missing, blank, or whitespace only (Unicode spaces such as U+00A0 included) | 400 | `DESCRIPTION_MISSING` | Description missing |
 | `OUT` larger than the available balance | 422 | `INSUFFICIENT_FUNDS` | Insufficient funds |
 | GET account: ID malformed / unknown | 400 / 404 | `ACCOUNT_NOT_FOUND` | Account not found |
 | POST transaction: ID malformed / unknown | 400 / 404 | `ACCOUNT_MISSING` | Account missing |
 | GET transactions: ID malformed / unknown | 400 / 404 | `INVALID_ACCOUNT` | Invalid account |
-| Malformed JSON, bad country, `currencies` list missing, empty or with duplicates, blank or too long `customerId`, description > 255, a control character in a free-text field | 400 | `VALIDATION_FAILED` | (not in PDF) |
+| Malformed JSON, bad country, `currencies` list missing, empty or with duplicates, blank or too long `customerId`, description > 255, a control character, line separator or unpaired surrogate in a free-text field | 400 | `VALIDATION_FAILED` | (not in PDF) |
 | Any other malformed parameter (a path or query value that doesn't convert to its type) | 400 | `VALIDATION_FAILED` | (not in PDF) |
 
 Protocol errors (not in PDF) come from the HTTP layer rather than the request's content, and get a
@@ -135,6 +138,10 @@ code by status:
 
 A 500's `detail` is generic and never carries the exception message; the full exception goes to the
 ERROR log.
+
+Every endpoint declares `consumes`/`produces` `application/json`, so a 415 or 406 is decided before
+the request is processed: a rejected `Content-Type` or `Accept` never posts a transaction or
+creates an account.
 
 How the rules apply:
 1. **Order of checks:** request validation first, then account existence, then business rules.
@@ -264,8 +271,10 @@ The full test plan is Stage 4 (`docs/test-plan.md`). The design commits to these
 
 ## 8. Known limitations
 
-- **Balance overflow:** a balance pushed past `NUMERIC(19,2)` by `IN`s is not handled gracefully.
-  An individual amount is capped at 17 integer digits, so this is unrealistic.
+- **Balance overflow:** a balance pushed past `NUMERIC(19,2)` by `IN`s fails as a 500
+  `INTERNAL_ERROR` (rolled back, logged at ERROR). An amount is capped at 17 integer digits, but two
+  requests are enough: `IN 99999999999999999.99`, then `IN 0.01` on the same balance. A 422 for this
+  is planned with task 6.
 - **No outbox latency tuning:** events are published up to one poll interval (~200 ms) after commit.
 - **Docker image build skips tests:** the Dockerfile builds with `bootJar -x test`, because
   Testcontainers can't run inside `docker build`. Tests and the coverage gate belong to

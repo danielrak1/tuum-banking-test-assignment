@@ -204,7 +204,89 @@ class TransactionApiIT {
                 Arguments.of("description tab", "10.00", "\"EUR\"", "\"IN\"", "\"Rent\\tMay\"",
                         "description", "VALIDATION_FAILED"),
                 Arguments.of("description newline", "10.00", "\"EUR\"", "\"IN\"", "\"Rent\\nMay\"",
-                        "description", "VALIDATION_FAILED"));
+                        "description", "VALIDATION_FAILED"),
+                // description: C1 controls, line/paragraph separators, unpaired surrogates (§2 free text)
+                Arguments.of("description NEL U+0085", "10.00", "\"EUR\"", "\"IN\"", "\"a\\u0085b\"",
+                        "description", "VALIDATION_FAILED"),
+                Arguments.of("description U+009F", "10.00", "\"EUR\"", "\"IN\"", "\"a\\u009Fb\"",
+                        "description", "VALIDATION_FAILED"),
+                Arguments.of("description U+2028", "10.00", "\"EUR\"", "\"IN\"", "\"a\\u2028b\"",
+                        "description", "VALIDATION_FAILED"),
+                Arguments.of("description U+2029", "10.00", "\"EUR\"", "\"IN\"", "\"a\\u2029b\"",
+                        "description", "VALIDATION_FAILED"),
+                Arguments.of("description unpaired high surrogate", "10.00", "\"EUR\"", "\"IN\"", "\"x\\ud800y\"",
+                        "description", "VALIDATION_FAILED"),
+                Arguments.of("description unpaired low surrogate", "10.00", "\"EUR\"", "\"IN\"", "\"x\\udc00y\"",
+                        "description", "VALIDATION_FAILED"),
+                Arguments.of("description reversed surrogate pair", "10.00", "\"EUR\"", "\"IN\"",
+                        "\"x\\ude00\\ud83dy\"", "description", "VALIDATION_FAILED"),
+                // description: Unicode spaces count as blank (§2 description row, §3 description row)
+                Arguments.of("description U+00A0", "10.00", "\"EUR\"", "\"IN\"", "\"\\u00A0\"",
+                        "description", "DESCRIPTION_MISSING"),
+                Arguments.of("description U+2003", "10.00", "\"EUR\"", "\"IN\"", "\"\\u2003\"",
+                        "description", "DESCRIPTION_MISSING"),
+                Arguments.of("description U+2007 U+202F", "10.00", "\"EUR\"", "\"IN\"", "\"\\u2007\\u202F\"",
+                        "description", "DESCRIPTION_MISSING"),
+                Arguments.of("description U+3000", "10.00", "\"EUR\"", "\"IN\"", "\"\\u3000\"",
+                        "description", "DESCRIPTION_MISSING"),
+                Arguments.of("description U+00A0 space U+3000", "10.00", "\"EUR\"", "\"IN\"", "\"\\u00A0 \\u3000\"",
+                        "description", "DESCRIPTION_MISSING"));
+    }
+
+    static Stream<Arguments> acceptedFreeTextDescriptions() {
+        return Stream.of(
+                Arguments.of("surrogate pair (emoji)", "Pay \\ud83d\\ude00", "Pay \uD83D\uDE00"),
+                Arguments.of("inner U+00A0", "a\\u00A0b", "a\u00A0b"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("acceptedFreeTextDescriptions")
+    void acceptsFreeTextDescriptionAndStoresItUnchanged(String label, String escaped, String expected) {
+        // §2: free text is stored exactly as sent; the JSON escapes put the exact UTF-16 on the wire.
+        String accountId = api.createAccount("EUR");
+        long before = api.maxOutboxId(accountId);
+
+        EntityExchangeResult<String> result = api.postTransactionRaw(accountId,
+                body("10.00", "\"EUR\"", "\"IN\"", "\"" + escaped + "\""));
+        assertThat(result.getStatus().value()).as(result.getResponseBody()).isEqualTo(201);
+        JsonNode tx = JSON.readTree(result.getResponseBody());
+        assertTransaction(tx, accountId, "10.00", "EUR", "IN", expected, "10.00");
+
+        List<JsonNode> list = api.listTransactions(accountId);
+        assertThat(list).hasSize(1);
+        assertThat(list.get(0).get("description").asString()).isEqualTo(expected);
+
+        assertTransactionEvents(accountId, before, tx);
+        String eventDescription = jdbc.queryForObject("""
+                SELECT payload->'data'->>'description' FROM outbox_event
+                WHERE payload->>'accountId' = ? AND routing_key = 'transaction.created'
+                """, String.class, accountId);
+        assertThat(eventDescription).isEqualTo(expected);
+    }
+
+    @Test
+    @Disabled("task 6: reject duplicate JSON keys, §3 rule 4")
+    void rejectsDuplicateAmountKeyWithInvalidAmount() {
+        String accountId = api.createAccount("EUR");
+        long before = api.maxOutboxId(accountId);
+        JsonNode problem = expectProblem(api.postTransactionRaw(accountId, """
+                {"amount": 1.00, "currency": "EUR", "direction": "IN", "description": "Dup", "amount": 5000.00}
+                """), 400, "INVALID_AMOUNT");
+        assertErrors(problem, "amount", "INVALID_AMOUNT");
+        assertNothingChanged(accountId, before, 0, "EUR", "0.00");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"42", "true"})
+    @Disabled("task 6: reject scalar coercion into strings, §3 rule 4")
+    void rejectsNonStringDescriptionWithDescriptionMissing(String description) {
+        String accountId = api.createAccount("EUR");
+        long before = api.maxOutboxId(accountId);
+        JsonNode problem = expectProblem(
+                api.postTransactionRaw(accountId, body("10.00", "\"EUR\"", "\"IN\"", description)),
+                400, "DESCRIPTION_MISSING");
+        assertErrors(problem, "description", "DESCRIPTION_MISSING");
+        assertNothingChanged(accountId, before, 0, "EUR", "0.00");
     }
 
     @ParameterizedTest(name = "{0} -> {6}")
