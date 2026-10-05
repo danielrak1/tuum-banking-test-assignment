@@ -36,7 +36,7 @@ Schema lives in `src/main/resources/db/migration/` and Flyway applies it on star
 ## Hard rules
 - **Money** ([ADR-0001](docs/adr/0001-money-handling.md)): `BigDecimal` scale 2 ↔ `NUMERIC(19,2)`.
   Never `float`/`double`, `new BigDecimal(double)` or `BigDecimal.valueOf(double)`, not even in tests.
-  Compare with `compareTo`, never `equals`. Reject more than 2 decimals; never round at the boundary.
+  Compare with `compareTo`, never `equals`. Reject more than 2 decimals (trailing zeros don't count: `10.500` is 10.50); never round at the boundary.
 - **Balances** ([ADR-0002](docs/adr/0002-balance-concurrency.md)): change only through
   `BalanceMapper.applyDelta` (the conditional `UPDATE … WHERE available_amount + delta >= 0 RETURNING`).
   0 rows → 422 `INSUFFICIENT_FUNDS`. No other `UPDATE balance` anywhere.

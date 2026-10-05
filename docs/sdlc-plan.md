@@ -84,10 +84,15 @@ then commits it.
   4. transactions
   5. events. Also: give the outbox its own explicitly configured `JsonMapper`, so a
      `spring.jackson.*` change to the HTTP mapper can't silently change the §5 event format
-     (task 2 review, finding H).
+     (task 2 review, finding H). Also: the tests that read `outbox_event` directly
+     (`AccountApiIT`, `TransactionApiIT`, `BalanceConcurrencyIT`) will race with the poller once
+     it deletes published rows. Move their event checks to the `banking.events.all` queue,
+     waiting with Awaitility (task 3 test-writer finding).
   6. errors. Includes design.md §3 rule 4: map Jackson parse errors by field path to that field's
      code (e.g. `"amount": "abc"` → `INVALID_AMOUNT`), with a one-entry `errors[]`. Until then every
-     parse error is `VALIDATION_FAILED` (task 2 review, finding F).
+     parse error is `VALIDATION_FAILED` (task 2 review, finding F). Also reject a JSON string
+     amount (`"10.50"`) with `INVALID_AMOUNT`: Jackson coerces it and accepts it today. Then remove
+     `@Disabled` from the two task-6 tests in `TransactionApiIT` (task 3, decision 2).
   7. multi-stage Dockerfile, and docker-compose with healthchecks. RabbitMQ's `guest` user only
      works from loopback, so the app container can't use it: set `RABBITMQ_DEFAULT_USER`/`RABBITMQ_DEFAULT_PASS`
      on the broker, and give the app env overrides (`SPRING_DATASOURCE_URL`, `SPRING_RABBITMQ_HOST`,
