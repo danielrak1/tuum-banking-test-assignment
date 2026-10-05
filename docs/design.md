@@ -65,18 +65,23 @@ an ADR in [`docs/adr/`](adr/):
   "direction": "IN", "description": "Salary", "balanceAfter": 10.50 }
 ```
 
+- **Account `balances`** are listed in currency order (EUR, GBP, SEK, USD), not request order.
+- **`Location`** on create is relative: `/accounts/{accountId}`.
+
 ### Input rules
 | Field | Rule |
 |---|---|
-| `accountId` (path) | UUID |
-| `customerId` | String, not blank, ≤ 64 characters. This service doesn't own customers, so the format is free. |
+| `accountId` (path) | Canonical UUID: 36 characters, 8-4-4-4-12 hex digits, case-insensitive. Anything else (no dashes, braces, short groups) is malformed. |
+| `customerId` | Free text: not blank, ≤ 64 characters. This service doesn't own customers, so the format is free. |
 | `country` | `[A-Z]{2}` (ISO 3166 alpha-2 shape) |
 | `currencies` | Non-empty, no duplicates, each one of `EUR`, `SEK`, `GBP`, `USD` |
 | `currency` | One of `EUR`, `SEK`, `GBP`, `USD`, case-sensitive |
 | `direction` | `IN` or `OUT`, case-sensitive |
 | `amount` | JSON number, > 0, at most 2 decimals, at most 17 integer digits (`@Positive @Digits(integer=17, fraction=2)`) |
-| `description` | Not blank, ≤ 255 characters |
+| `description` | Free text: not blank, ≤ 255 characters |
 
+- **Free-text fields** (`customerId`, `description`) reject control characters (U+0000–U+001F,
+  U+007F), including NUL, which Postgres can't store in `varchar` or `jsonb`.
 - **`currency` and `direction` are bound as `String`** and validated, not bound as Java enums.
   With enums, a bad value would fail inside Jackson as a generic parse error instead of returning
   the PDF's `INVALID_CURRENCY` / `INVALID_DIRECTION`.
@@ -87,10 +92,14 @@ an ADR in [`docs/adr/`](adr/):
 
 Errors are RFC 9457 `ProblemDetail` (`application/problem+json`):
 - Every error carries a machine-readable `code`, named after the PDF's error wording.
-- Validation failures also list every failing field in `errors[]`.
+- Validation failures also list every failing field in `errors[]`. A `field` is the JSON path of
+  the failing value; a list element is indexed, e.g. `currencies[1]`.
+- `type` is omitted. RFC 9457 treats a missing `type` as `about:blank`.
+- `title`, `detail` and `errors[].message` are human-readable and not part of the contract; clients
+  and tests rely on `status`, `code` and `errors[].field`/`code`.
 
 ```json
-{ "type": "about:blank", "title": "Bad Request", "status": 400,
+{ "title": "Bad Request", "status": 400,
   "detail": "Request validation failed", "instance": "/accounts/0b6f…/transactions",
   "code": "INVALID_AMOUNT",
   "errors": [ { "field": "amount", "code": "INVALID_AMOUNT", "message": "must be greater than 0" },
@@ -99,7 +108,7 @@ Errors are RFC 9457 `ProblemDetail` (`application/problem+json`):
 
 | Case | Status | `code` | PDF error |
 |---|---|---|---|
-| Currency missing, or not EUR/SEK/GBP/USD (create account or transaction) | 400 | `INVALID_CURRENCY` | Invalid currency |
+| Transaction `currency` missing, or any currency (transaction, or an element of `currencies`) null or not EUR/SEK/GBP/USD | 400 | `INVALID_CURRENCY` | Invalid currency |
 | Supported currency, but the account has no balance in it | 422 | `INVALID_CURRENCY` | Invalid currency |
 | Direction missing, or not `IN`/`OUT` | 400 | `INVALID_DIRECTION` | Invalid direction |
 | Amount missing, unparseable, ≤ 0, more than 2 decimals, or more than 17 integer digits | 400 | `INVALID_AMOUNT` | Invalid amount |
@@ -108,7 +117,22 @@ Errors are RFC 9457 `ProblemDetail` (`application/problem+json`):
 | GET account: ID malformed / unknown | 400 / 404 | `ACCOUNT_NOT_FOUND` | Account not found |
 | POST transaction: ID malformed / unknown | 400 / 404 | `ACCOUNT_MISSING` | Account missing |
 | GET transactions: ID malformed / unknown | 400 / 404 | `INVALID_ACCOUNT` | Invalid account |
-| Malformed JSON, bad country, empty or duplicate currencies, blank or too long `customerId`, description > 255 | 400 | `VALIDATION_FAILED` | (not in PDF) |
+| Malformed JSON, bad country, `currencies` list missing, empty or with duplicates, blank or too long `customerId`, description > 255, a control character in a free-text field | 400 | `VALIDATION_FAILED` | (not in PDF) |
+| Any other malformed parameter (a path or query value that doesn't convert to its type) | 400 | `VALIDATION_FAILED` | (not in PDF) |
+
+Protocol errors (not in PDF) come from the HTTP layer rather than the request's content, and get a
+code by status:
+
+| Case | Status | `code` |
+|---|---|---|
+| No such route (e.g. `/accounts/{id}/foo`) | 404 | `NOT_FOUND` |
+| Method not supported on the route | 405 | `METHOD_NOT_ALLOWED` |
+| `Content-Type` not `application/json` | 415 | `UNSUPPORTED_MEDIA_TYPE` |
+| Any other 4xx from the HTTP layer (e.g. 406) | 4xx | `BAD_REQUEST` |
+| Any unexpected server error | 500 | `INTERNAL_ERROR` |
+
+A 500's `detail` is generic and never carries the exception message; the full exception goes to the
+ERROR log.
 
 How the rules apply:
 1. **Order of checks:** request validation first, then account existence, then business rules.
@@ -116,7 +140,8 @@ How the rules apply:
 2. **400 vs 422:** 400 means the request is wrong on its own. 422 means the request is well formed,
    but the account's state rejects it.
 3. **One top-level code:** when several fields fail, `code` is taken in this priority:
-   currency > direction > amount > description > other. `errors[]` lists all of them.
+   currency > direction > amount > description > other. `errors[]` lists all of them, sorted the
+   same way (then by field).
 4. **Jackson parse errors** (an unparseable `amount` such as `"abc"`, a wrong JSON type) are mapped
    by field path to that field's code. Anything else gets `VALIDATION_FAILED`.
 5. **Not-found codes are per endpoint** and use the PDF's own name for that endpoint. The status
@@ -195,7 +220,7 @@ Events are emitted per changed record (ADR-0004). `data` is the record's full st
 | Routing key = `eventType` | Emitted by | `data` |
 |---|---|---|
 | `account.created` | Create account | `{accountId, customerId, country}` |
-| `balance.created` | Create account (one per currency) | `{accountId, currency, availableAmount}` |
+| `balance.created` | Create account (one per currency, in currency order: EUR, GBP, SEK, USD) | `{accountId, currency, availableAmount}` |
 | `transaction.created` | Create transaction | `{transactionId, accountId, amount, currency, direction, description, balanceAfter}` |
 | `balance.updated` | Create transaction | `{accountId, currency, availableAmount, transactionId}` |
 
