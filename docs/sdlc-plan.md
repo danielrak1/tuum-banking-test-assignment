@@ -16,7 +16,7 @@ then commits it.
 | 1. Plan | ✅ Done | `intent.md` |
 | 2. Design | ✅ Done | `docs/design.md`, `docs/adr/*.md` |
 | 3. Build | ✅ Done: tasks 1–6 cover all 7 build items (skeleton + schema PR #1, create/get account PR #2, transactions PR #3, events PR #4, errors PR #5, docker PR #6) | code, `CLAUDE.md`, `.claude/skills/add-endpoint`, `.claude/agents/test-writer.md`, `banking-reviewer.md`, `spec-checker.md` |
-| 4. Test | 🚧 Part A done (safety net, PR #8): `docs/test-plan.md`, `scripts/contract-check.sh`, `verify` skill. Part B: k6 and the carry-overs | `docs/test-plan.md`, contract check, `verify`, k6 load test |
+| 4. Test | ✅ Part A (safety net, PR #8): `docs/test-plan.md`, `scripts/contract-check.sh`, `verify` skill. Part B (throughput): `scripts/load-test.sh`, `docs/performance.md`, the existence fold. Balance overflow stays deferred | `docs/test-plan.md`, contract check, `verify`, k6 load test |
 | 5. Deploy | ⬜ | hooks, PR review loop, `.github/workflows/ci.yml` |
 | 6. Maintain | ⬜ | `docs/retro.md`, final README |
 
@@ -120,13 +120,15 @@ then commits it.
   - a **concurrency test** proving balances never go negative
   - a test proving **events are never lost**
 - **Contract check** (`scripts/contract-check.sh`): runs every request and error case from the PDF against the running compose stack. This is our version of the playbook's "continuous evals".
-- **Throughput:** a k6 script, run through its Docker image, measures TPS and p95 latency. Results go in the README.
+- ✅ (part B) **Throughput:** a k6 script, run through its Docker image, measures TPS and p95 latency, plus
+  the outbox lag under load (`scripts/load-test.sh`, `docs/plans/stage-4b-performance.md`). Results are in
+  `docs/performance.md`, for the README.
 - **Carried over from the task 3 review:**
   - ✅ (part A) Lengths count code points: `@MaxCodePoints` replaces `@Size` on `customerId` and
     `description`, with emoji boundary tests.
   - ✅ (part A) `AccountApiIT` and `ProtocolErrorsIT` use the shared `BankingApi`/`BankingEvents`
     helpers.
-  - Throughput: fold `TransactionService.create`'s two existence checks (account, balance) into one
+  - ✅ (part B) Throughput: fold `TransactionService.create`'s two existence checks (account, balance) into one
     `SELECT EXISTS …, EXISTS …`, and use `AccountMapper.exists` instead of mapping the whole account row.
 - **Carried over from the post-build audit (banking-reviewer, spec-checker):**
   - Balance overflow (design.md §8): a 422 instead of a 500 for an `IN` that pushes a balance past
