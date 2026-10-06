@@ -16,6 +16,8 @@ Gradle is not installed locally; always use the wrapper. Docker must be running 
 docker compose up --build                         # full stack: Postgres :5432, RabbitMQ :5672, UI :15672 (banking/banking), app :8080
 docker compose up -d postgres rabbitmq            # dev: brokers only, then…
 ./gradlew bootRun                                 # …app on :8080 against them; Swagger UI at /swagger-ui.html
+.claude/skills/verify/verify.sh                   # check + a clean stack on other ports + contract check + teardown, one summary
+scripts/contract-check.sh [BASE_URL] [MGMT_URL]   # the PDF's requests and errors (and events) against a running stack
 ```
 The image builds with `bootJar` (no tests). Health (`/actuator/health`, the compose healthcheck) is
 app + DB only; RabbitMQ is left out on purpose, because the outbox lets the app serve through a broker outage.

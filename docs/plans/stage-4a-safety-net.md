@@ -1,6 +1,6 @@
 # Stage 4, part A: Safety net (`test/safety-net`)
 
-> **Status:** in progress. Planned 2026-10-06 and approved with one addition (an optional event check in the contract check).
+> **Status:** done 2026-10-06 (PR #8). Approved with one addition (an optional event check in the contract check); outcome at the end.
 
 ## Context
 Stage 4 (`docs/sdlc-plan.md`) turns the tests from Stage 3 into a safety net that can be shown:
@@ -204,3 +204,36 @@ There are also two Stage 4 carry-overs:
 - **Negative run:** the contract check against a stack that has been changed on purpose must fail
   with a non-zero exit. Change the expected code of one case in a scratch copy and run it against
   the stack, so the real script is never touched. An unreachable `BASE_URL` → exit 2.
+
+## Outcome
+- **The helper move:** still 196 tests, all green, and no assertion got weaker. `expectProblem` gained the
+  non-blank-body check. The remaining duplicates (`EventDeliveryIT`) are listed in the test plan, §7.
+- **`@MaxCodePoints`:** built as decided.
+  - test-writer added 7 boundary tests: the 6 requested, plus a 65-code-point `customerId` with a
+    unique ASCII marker, so "nothing published" can be asserted the standard way. All pass, with no
+    spec-vs-code mismatches.
+  - `OpenApiIT` checks `maxLength` 64 and 255.
+- **The contract check:** 20 cases (C01–C20, listed in the test plan, §5). It needs jq 1.7+, which
+  keeps `69.50` as written, so the money cases check scale 2 too. Negative runs:
+  - unreachable stack → exit 2;
+  - a scratch copy with one expected code wrong → `FAIL C02` with expected vs actual, exit 1;
+  - no management URL → C20 `SKIPPED (no mgmt URL)`.
+- **`verify`:** passes end to end with the dev stack running next to it. The tests take 64 s, the
+  stack 19 s and the contract check 5 s; 204 tests; lines 95.9%, branches 89.1%. Runs on macOS's
+  bash 3.2.
+- **Review** (`/code-review low`, scripts and skill only):
+  - **Finding 1, an empty-array expansion under `set -u` on bash 3.2:** not reproducible on 3.2.57.
+    The guard was added anyway.
+  - **Finding 2, an interrupt exiting 1 instead of 130:** confirmed and fixed. The EXIT trap now
+    keeps a non-zero status.
+- **Found while checking the fixes:**
+  - A trap that fires during a step inherits that step's log redirection. The summary of an
+    interrupted run went into `up.log`, not to the terminal. The traps now write to the saved
+    terminal fds, and the interrupted step is recorded as FAIL "interrupted". TERM during
+    `compose up` → that table, teardown, exit 130, no containers left.
+  - With the EXIT trap keeping `$?`, a passing run would have ended with status 1, because the
+    last `grep '^FAIL'` matched nothing under `pipefail`. The script now ends with an explicit
+    `exit 0`.
+  - **The user's change:** `verify` runs `./gradlew test --rerun check`. A run with no source changes
+    had reported `:test` as UP-TO-DATE ("PASS 0s"). The coverage line is shown only when the tests
+    ran in that invocation.

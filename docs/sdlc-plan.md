@@ -16,7 +16,7 @@ then commits it.
 | 1. Plan | ✅ Done | `intent.md` |
 | 2. Design | ✅ Done | `docs/design.md`, `docs/adr/*.md` |
 | 3. Build | ✅ Done: tasks 1–6 cover all 7 build items (skeleton + schema PR #1, create/get account PR #2, transactions PR #3, events PR #4, errors PR #5, docker PR #6) | code, `CLAUDE.md`, `.claude/skills/add-endpoint`, `.claude/agents/test-writer.md`, `banking-reviewer.md`, `spec-checker.md` |
-| 4. Test | ⬜ | `docs/test-plan.md`, contract check, k6 load test, more tests (the JaCoCo gate and the core integration tests were built in Stage 3) |
+| 4. Test | 🚧 Part A done (safety net, PR #8): `docs/test-plan.md`, `scripts/contract-check.sh`, `verify` skill. Part B: k6 and the carry-overs | `docs/test-plan.md`, contract check, `verify`, k6 load test |
 | 5. Deploy | ⬜ | hooks, PR review loop, `.github/workflows/ci.yml` |
 | 6. Maintain | ⬜ | `docs/retro.md`, final README |
 
@@ -122,11 +122,10 @@ then commits it.
 - **Contract check** (`scripts/contract-check.sh`): runs every request and error case from the PDF against the running compose stack. This is our version of the playbook's "continuous evals".
 - **Throughput:** a k6 script, run through its Docker image, measures TPS and p95 latency. Results go in the README.
 - **Carried over from the task 3 review:**
-  - `@Size` counts UTF-16 code units, while design.md says characters and Postgres counts code
-    points. 128 emoji are rejected as more than 255, and the same goes for `customerId`'s 64. This only
-    over-rejects. Decide whether to count code points.
-  - Move `AccountApiIT` and `ProtocolErrorsIT` onto the shared `BankingApi` test helper. Their
-    private copies (`JSON`, `expectProblem`, `errors`, …) have already drifted.
+  - ✅ (part A) Lengths count code points: `@MaxCodePoints` replaces `@Size` on `customerId` and
+    `description`, with emoji boundary tests.
+  - ✅ (part A) `AccountApiIT` and `ProtocolErrorsIT` use the shared `BankingApi`/`BankingEvents`
+    helpers.
   - Throughput: fold `TransactionService.create`'s two existence checks (account, balance) into one
     `SELECT EXISTS …, EXISTS …`, and use `AccountMapper.exists` instead of mapping the whole account row.
 - **Carried over from the post-build audit (banking-reviewer, spec-checker):**
@@ -135,7 +134,8 @@ then commits it.
     SQLSTATE 22003 at the boundary, not inside `@Transactional`: Postgres has already aborted the
     transaction. Don't add an upper bound to `applyDelta`'s `WHERE` either, because a 0-row `IN`
     would then fail as an `IllegalStateException`.
-- Write the **`verify` skill**, which chains all of the above.
+- ✅ (part A) Write the **`verify` skill**, which chains all of the above:
+  `.claude/skills/verify/verify.sh` (`docs/plans/stage-4a-safety-net.md`).
 
 ## Stage 5: Deploy
 - **Hooks as gates** in `.claude/settings.json`:
