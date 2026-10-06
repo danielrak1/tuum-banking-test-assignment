@@ -17,14 +17,47 @@ services:
 
   rabbitmq:
     image: rabbitmq:4-management
+    environment:
+      # guest only works from loopback, so the app container needs a user of its own
+      RABBITMQ_DEFAULT_USER: banking
+      RABBITMQ_DEFAULT_PASS: banking
     ports:
       - "5672:5672"
-      - "15672:15672"   # management UI, guest/guest
+      - "15672:15672"   # management UI, banking/banking
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
       timeout: 5s
       retries: 10
+
+  app:
+    build: .
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/banking
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_USERNAME: banking
+      SPRING_RABBITMQ_PASSWORD: banking
+    ports:
+      - "8080:8080"   # API, Swagger UI at /swagger-ui.html
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy   # startup order only: health itself ignores the broker (ADR-0003)
+    healthcheck:
+      # The JRE image has no curl or wget: a plain HTTP GET over bash's /dev/tcp
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/localhost/8080
+          && printf 'GET /actuator/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3
+          && grep -q '"status":"UP"' <&3
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
 
 volumes:
   pgdata:

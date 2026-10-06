@@ -42,7 +42,7 @@ the README (Stage 6).
      `./gradlew bootJar --no-daemon`, with a BuildKit cache mount on `/root/.gradle` so rebuilds don't
      download Gradle and dependencies again. `bootJar` doesn't run tests. Testcontainers can't run
      inside `docker build`, and tests belong to `./gradlew check` (design.md §8).
-   - Then `java -Djarmode=tools -jar app.jar extract --layers --launcher`. That is the layout from the
+   - Then `java -Djarmode=tools -jar app.jar extract --layers`. That is the layout from the
      Boot 4 reference docs, and it puts dependencies and app classes in separate image layers.
    - Runtime stage: `eclipse-temurin:25-jre`, a non-root user, `EXPOSE 8080`,
      `ENTRYPOINT ["java", "-jar", "app.jar"]`.

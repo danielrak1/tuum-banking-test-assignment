@@ -34,6 +34,14 @@ an ADR in [`docs/adr/`](adr/):
 - **Packages** are `api / domain / persistence / messaging`.
 - **Schema:** Flyway applies it on application startup. That is how "docker compose initialises
   the database structure" is met: compose starts Postgres healthy first, then the app migrates.
+- **Running it:** `docker compose up --build` builds the image (multi-stage `Dockerfile`, no local
+  Java needed) and starts Postgres, RabbitMQ and the app, which waits for both brokers to be healthy.
+  The app reaches them through env vars (`SPRING_DATASOURCE_URL`, `SPRING_RABBITMQ_*`) and its own
+  RabbitMQ user, because `guest` only works from loopback.
+- **Health:** `/actuator/health` (the only Actuator endpoint exposed) is the app plus the DB. The
+  RabbitMQ indicator is off: the outbox keeps the app serving through a broker outage (ADR-0003),
+  so the broker must not make it unhealthy. The one endpoint serves as both liveness and readiness;
+  behind an orchestrator they would be split.
 
 ### Stack (checked with context7, 2026-10-02)
 | Concern | Choice |
@@ -291,9 +299,9 @@ The full test plan is Stage 4 (`docs/test-plan.md`). The design commits to these
 - **Balance overflow:** a balance pushed past `NUMERIC(19,2)` by `IN`s fails as a 500
   `INTERNAL_ERROR` (rolled back, logged at ERROR). An amount is capped at 17 integer digits, but two
   requests are enough: `IN 99999999999999999.99`, then `IN 0.01` on the same balance. A 422 for this
-  is planned with task 6.
+  is planned but not scheduled yet (`docs/sdlc-plan.md`, build item 6).
 - **No outbox latency tuning:** events are published up to one poll interval (~200 ms) after commit.
-- **Docker image build skips tests:** the Dockerfile builds with `bootJar -x test`, because
+- **Docker image build skips tests:** the Dockerfile builds with `bootJar`, which runs no tests, because
   Testcontainers can't run inside `docker build`. Tests and the coverage gate belong to
   `./gradlew check` (locally and in CI).
 

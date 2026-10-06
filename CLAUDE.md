@@ -13,9 +13,12 @@ Gradle is not installed locally; always use the wrapper. Docker must be running 
 ./gradlew check                                   # compile, all tests, JaCoCo gate (lines ≥ 0.80, branches ≥ 0.70)
 ./gradlew test --tests 'com.danielrak.banking.SomeTest'           # one class
 ./gradlew test --tests 'com.danielrak.banking.SomeTest.someMethod' # one method
-docker compose up -d                              # Postgres :5432, RabbitMQ :5672, UI :15672 (guest/guest)
-./gradlew bootRun                                 # app on :8080 against compose; Swagger UI at /swagger-ui.html
+docker compose up --build                         # full stack: Postgres :5432, RabbitMQ :5672, UI :15672 (banking/banking), app :8080
+docker compose up -d postgres rabbitmq            # dev: brokers only, then…
+./gradlew bootRun                                 # …app on :8080 against them; Swagger UI at /swagger-ui.html
 ```
+The image builds with `bootJar` (no tests). Health (`/actuator/health`, the compose healthcheck) is
+app + DB only; RabbitMQ is left out on purpose, because the outbox lets the app serve through a broker outage.
 Coverage report: `build/reports/jacoco/test/html/index.html`.
 
 ## Stack
