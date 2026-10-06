@@ -2,6 +2,7 @@ package com.danielrak.banking;
 
 import static com.danielrak.banking.BankingApi.JSON;
 import static com.danielrak.banking.BankingApi.assertErrors;
+import static com.danielrak.banking.BankingApi.assertJsonContentType;
 import static com.danielrak.banking.BankingApi.expectProblem;
 import static com.danielrak.banking.BankingApi.fieldNames;
 import static com.danielrak.banking.BankingEvents.assertEnvelope;
@@ -26,7 +27,6 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.client.EntityExchangeResult;
 import org.springframework.test.web.servlet.client.RestTestClient;
@@ -526,7 +526,7 @@ class TransactionApiIT {
     void rejectsUnknownAccountIdWith404AccountMissingAndWritesNoEvent() {
         String unknownId = UUID.randomUUID().toString();
         expectProblem(api.postTransaction(unknownId, "10.00", "EUR", "IN", "Unknown"), 404, "ACCOUNT_MISSING");
-        assertNoEventMentions(unknownId);
+        events.assertNoEventMentions(unknownId);
     }
 
     // ================================================================ POST order of checks (§3 rule 1)
@@ -552,14 +552,14 @@ class TransactionApiIT {
         JsonNode problem = expectProblem(
                 api.postTransaction(unknownId, "-5.00", "EUR", "IN", "Unknown and negative"), 400, "INVALID_AMOUNT");
         assertErrors(problem, "amount", "INVALID_AMOUNT");
-        assertNoEventMentions(unknownId);
+        events.assertNoEventMentions(unknownId);
     }
 
     @Test
     void checksAccountExistenceBeforeCurrencyHeld() {
         String unknownId = UUID.randomUUID().toString();
         expectProblem(api.postTransaction(unknownId, "10.00", "SEK", "OUT", "Unknown account"), 404, "ACCOUNT_MISSING");
-        assertNoEventMentions(unknownId);
+        events.assertNoEventMentions(unknownId);
     }
 
     @Test
@@ -715,13 +715,6 @@ class TransactionApiIT {
         assertThat(node.decimalValue().scale()).as("%s scale", name).isEqualTo(2);
     }
 
-    private static void assertJsonContentType(EntityExchangeResult<String> result) {
-        MediaType contentType = result.getResponseHeaders().getContentType();
-        assertThat(contentType).isNotNull();
-        assertThat(contentType.isCompatibleWith(MediaType.APPLICATION_JSON))
-                .as("Content-Type %s", contentType).isTrue();
-    }
-
     private static Map<String, BigDecimal> balancesOf(JsonNode account) {
         Map<String, BigDecimal> balances = new LinkedHashMap<>();
         for (JsonNode balance : account.get("balances")) {
@@ -737,12 +730,6 @@ class TransactionApiIT {
         assertThat(events.events(accountId)).as("no new events").hasSize(eventsBefore);
         assertThat(api.balance(accountId, currency)).isEqualByComparingTo(new BigDecimal(balance));
         assertThat(api.listTransactions(accountId)).as("no transaction added").hasSize(transactionsBefore);
-    }
-
-    /** A rejected request published nothing: after the fence, no event mentions {@code marker}. */
-    private void assertNoEventMentions(String marker) {
-        events.fence();
-        assertThat(events.eventsMentioning(marker)).as("events mentioning %s", marker).isEmpty();
     }
 
     /**
