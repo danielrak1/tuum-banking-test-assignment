@@ -16,7 +16,6 @@ import java.util.UUID;
 import java.util.stream.Stream;
 import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -231,7 +230,6 @@ class AccountApiIT {
     }
 
     @Test
-    @Disabled("task 6: reject scalar coercion into strings, §3 rule 4")
     void rejectsNumericCustomerIdWithValidationFailed() {
         JsonNode problem = expectProblem(post("""
                 {"customerId": 12345, "country": "EE", "currencies": ["EUR"]}
@@ -244,6 +242,49 @@ class AccountApiIT {
         assertThat(events.eventsMatching(e -> "account.created".equals(e.eventType())
                 && "12345".equals(e.data().path("customerId").asString())))
                 .as("account.created events with customerId 12345").isEmpty();
+    }
+
+    @Test
+    void rejectsNonStringCurrencyElementWithInvalidCurrencyAtItsIndex() {
+        // §3 rule 4: a list element is mapped with the element rule (INVALID_CURRENCY) and its indexed path.
+        String customerId = uniqueCustomerId();
+        JsonNode problem = expectProblem(post("""
+                {"customerId": "%s", "country": "EE", "currencies": ["EUR", 1]}
+                """.formatted(customerId)), 400, "INVALID_CURRENCY");
+        assertSingleError(problem, "currencies[1]", "INVALID_CURRENCY");
+        assertNoEventMentions(customerId);
+    }
+
+    @Test
+    void rejectsStringCurrenciesWithValidationFailedOnTheListField() {
+        // §3 rule 4: the list field itself gets VALIDATION_FAILED, not the element code.
+        String customerId = uniqueCustomerId();
+        JsonNode problem = expectProblem(post("""
+                {"customerId": "%s", "country": "EE", "currencies": "EUR"}
+                """.formatted(customerId)), 400, "VALIDATION_FAILED");
+        assertSingleError(problem, "currencies", "VALIDATION_FAILED");
+        assertNoEventMentions(customerId);
+    }
+
+    @Test
+    void rejectsNumericCountryWithValidationFailed() {
+        String customerId = uniqueCustomerId();
+        JsonNode problem = expectProblem(post("""
+                {"customerId": "%s", "country": 42, "currencies": ["EUR"]}
+                """.formatted(customerId)), 400, "VALIDATION_FAILED");
+        assertSingleError(problem, "country", "VALIDATION_FAILED");
+        assertNoEventMentions(customerId);
+    }
+
+    @Test
+    void rejectsSyntaxErrorInsideListWithValidationFailedAndNoErrors() {
+        // §3 rule 4: a syntax error is a malformed document even inside a list: no errors[].
+        String customerId = uniqueCustomerId();
+        JsonNode problem = expectProblem(post("""
+                {"customerId": "%s", "country": "EE", "currencies": ["EUR" "USD"]}
+                """.formatted(customerId)), 400, "VALIDATION_FAILED");
+        assertThat(problem.has("errors")).as("errors[] in %s", problem).isFalse();
+        assertNoEventMentions(customerId);
     }
 
     @Test
@@ -534,6 +575,13 @@ class AccountApiIT {
         List<JsonNode> list = new ArrayList<>();
         errors.forEach(list::add);
         return list;
+    }
+
+    private static void assertSingleError(JsonNode problem, String field, String code) {
+        List<JsonNode> errors = errors(problem);
+        assertThat(errors).as("errors[] of %s", problem).hasSize(1);
+        assertThat(errors.get(0).get("field").asString()).isEqualTo(field);
+        assertThat(errors.get(0).get("code").asString()).isEqualTo(code);
     }
 
     private static String text(JsonNode node, String name) {

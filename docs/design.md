@@ -78,7 +78,7 @@ an ADR in [`docs/adr/`](adr/):
 | `currencies` | Non-empty, no duplicates, each one of `EUR`, `SEK`, `GBP`, `USD` |
 | `currency` | One of `EUR`, `SEK`, `GBP`, `USD`, case-sensitive |
 | `direction` | `IN` or `OUT`, case-sensitive |
-| `amount` | JSON number, > 0, at most 2 decimals, at most 17 integer digits (`NUMERIC(19,2)`). Trailing zeros don't count: `10.500` is 10.50 and `1e2` is 100.00. The response always has scale 2. (`@ValidAmount`, ADR-0001) |
+| `amount` | JSON number (a JSON string such as `"10.50"` is rejected), > 0, at most 2 decimals, at most 17 integer digits (`NUMERIC(19,2)`). Trailing zeros don't count: `10.500` is 10.50 and `1e2` is 100.00. The response always has scale 2. (`@ValidAmount`, ADR-0001) |
 | `description` | Free text: not blank, ≤ 255 characters. Unicode spaces such as U+00A0 count as blank. |
 
 - **Free-text fields** (`customerId`, `description`) are single-line and stored exactly as sent.
@@ -87,6 +87,8 @@ an ADR in [`docs/adr/`](adr/):
     Postgres can't store NUL in `varchar` or `jsonb`;
   - the line and paragraph separators U+2028 and U+2029;
   - unpaired UTF-16 surrogates, which the JDBC driver would silently store as `?`.
+- **String fields must be JSON strings.** A number or boolean (`"description": 42`, `"currency": 1`)
+  is rejected, not coerced to text.
 - **`currency` and `direction` are bound as `String`** and validated, not bound as Java enums.
   With enums, a bad value would fail inside Jackson as a generic parse error instead of returning
   the PDF's `INVALID_CURRENCY` / `INVALID_DIRECTION`.
@@ -116,13 +118,13 @@ Errors are RFC 9457 `ProblemDetail` (`application/problem+json`):
 | Transaction `currency` missing, or any currency (transaction, or an element of `currencies`) null or not EUR/SEK/GBP/USD | 400 | `INVALID_CURRENCY` | Invalid currency |
 | Supported currency, but the account has no balance in it | 422 | `INVALID_CURRENCY` | Invalid currency |
 | Direction missing, or not `IN`/`OUT` | 400 | `INVALID_DIRECTION` | Invalid direction |
-| Amount missing, unparseable, ≤ 0, more than 2 decimals, or more than 17 integer digits (trailing zeros don't count) | 400 | `INVALID_AMOUNT` | Invalid amount |
+| Amount missing, unparseable or a JSON string, ≤ 0, more than 2 decimals, or more than 17 integer digits (trailing zeros don't count) | 400 | `INVALID_AMOUNT` | Invalid amount |
 | Description missing, blank, or whitespace only (Unicode spaces such as U+00A0 included) | 400 | `DESCRIPTION_MISSING` | Description missing |
 | `OUT` larger than the available balance | 422 | `INSUFFICIENT_FUNDS` | Insufficient funds |
 | GET account: ID malformed / unknown | 400 / 404 | `ACCOUNT_NOT_FOUND` | Account not found |
 | POST transaction: ID malformed / unknown | 400 / 404 | `ACCOUNT_MISSING` | Account missing |
 | GET transactions: ID malformed / unknown | 400 / 404 | `INVALID_ACCOUNT` | Invalid account |
-| Malformed JSON, bad country, `currencies` list missing, empty or with duplicates, blank or too long `customerId`, description > 255, a control character, line separator or unpaired surrogate in a free-text field | 400 | `VALIDATION_FAILED` | (not in PDF) |
+| Malformed JSON (including a duplicate key), bad country, `currencies` list missing, empty or with duplicates, blank or too long `customerId`, description > 255, a control character, line separator or unpaired surrogate in a free-text field | 400 | `VALIDATION_FAILED` | (not in PDF) |
 | Any other malformed parameter (a path or query value that doesn't convert to its type) | 400 | `VALIDATION_FAILED` | (not in PDF) |
 
 Protocol errors (not in PDF) come from the HTTP layer rather than the request's content, and get a
@@ -157,10 +159,15 @@ How the rules apply:
 3. **One top-level code:** when several fields fail, `code` is taken in this priority:
    currency > direction > amount > description > other. `errors[]` lists all of them, sorted the
    same way (then by field).
-4. **Jackson parse errors** (an unparseable `amount` such as `"abc"`, a wrong JSON type) are mapped
-   by field path to that field's code. Anything else gets `VALIDATION_FAILED`.
-   *Not built yet (task 6).* Until then, every parse error gives `VALIDATION_FAILED`, and Jackson
-   coerces a JSON string amount (`"10.50"`) and accepts it. The tests for both are `@Disabled`.
+4. **Parse errors:** a value that can't be read as its field's type (a wrong JSON type such as
+   `"amount": "10.50"` or `"description": 42`, or an unparseable value) gets the code of that field's
+   validation rule, and a one-entry `errors[]` with the value's path. For example, `currencies[1]`
+   gets `INVALID_CURRENCY`, while `currencies` and `customerId` get `VALIDATION_FAILED`.
+   - Parsing stops at the first such value, so the other fields aren't validated: `"amount": "abc"`
+     plus a bad currency returns only `INVALID_AMOUNT`.
+   - A document that isn't well-formed JSON gets `VALIDATION_FAILED` with no `errors[]`. That
+     covers a syntax error (even inside a list), a duplicate key, a number longer than Jackson's
+     limit, or a body that isn't a JSON object.
 5. **Not-found codes are per endpoint** and use the PDF's own name for that endpoint. The status
    is the same everywhere: 400 if the ID is malformed, 404 if it is well formed but unknown.
 
