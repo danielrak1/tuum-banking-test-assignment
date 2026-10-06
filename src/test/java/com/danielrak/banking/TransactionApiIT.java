@@ -18,7 +18,6 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -269,20 +268,19 @@ class TransactionApiIT {
     }
 
     @Test
-    @Disabled("task 6: reject duplicate JSON keys, §3 rule 4")
-    void rejectsDuplicateAmountKeyWithInvalidAmount() {
+    void rejectsDuplicateAmountKeyWithValidationFailed() {
+        // §3 rule 4: a duplicate key makes the document malformed; it doesn't get the field's code.
         String accountId = api.createAccount("EUR");
         int before = events.awaitEvents(accountId, 2).size();
         JsonNode problem = expectProblem(api.postTransactionRaw(accountId, """
                 {"amount": 1.00, "currency": "EUR", "direction": "IN", "description": "Dup", "amount": 5000.00}
-                """), 400, "INVALID_AMOUNT");
-        assertErrors(problem, "amount", "INVALID_AMOUNT");
+                """), 400, "VALIDATION_FAILED");
+        assertThat(problem.has("errors")).as("errors[] in %s", problem).isFalse();
         assertNothingChanged(accountId, before, 0, "EUR", "0.00");
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"42", "true"})
-    @Disabled("task 6: reject scalar coercion into strings, §3 rule 4")
     void rejectsNonStringDescriptionWithDescriptionMissing(String description) {
         String accountId = api.createAccount("EUR");
         int before = events.awaitEvents(accountId, 2).size();
@@ -322,7 +320,6 @@ class TransactionApiIT {
     }
 
     @Test
-    @Disabled("task 6: reject string amounts, §2 / §3 rule 4")
     void rejectsStringAmountWithInvalidAmount() {
         String accountId = api.createAccount("EUR");
         JsonNode problem = expectProblem(api.postTransactionRaw(accountId, """
@@ -332,12 +329,97 @@ class TransactionApiIT {
     }
 
     @Test
-    @Disabled("task 6: reject string amounts, §2 / §3 rule 4")
     void rejectsUnparseableAmountWithInvalidAmount() {
         String accountId = api.createAccount("EUR");
         expectProblem(api.postTransactionRaw(accountId, """
                 {"amount": "abc", "currency": "EUR", "direction": "IN", "description": "Bad amount"}
                 """), 400, "INVALID_AMOUNT");
+    }
+
+    // ================================================================ POST parse errors (§3 rule 4)
+
+    @Test
+    void rejectsNumericCurrencyWithInvalidCurrency() {
+        String accountId = api.createAccount("EUR");
+        int before = events.awaitEvents(accountId, 2).size();
+        JsonNode problem = expectProblem(
+                api.postTransactionRaw(accountId, body("10.00", "1", "\"IN\"", "\"Pay\"")),
+                400, "INVALID_CURRENCY");
+        assertErrors(problem, "currency", "INVALID_CURRENCY");
+        assertNothingChanged(accountId, before, 0, "EUR", "0.00");
+    }
+
+    @Test
+    void rejectsBooleanDirectionWithInvalidDirection() {
+        String accountId = api.createAccount("EUR");
+        int before = events.awaitEvents(accountId, 2).size();
+        JsonNode problem = expectProblem(
+                api.postTransactionRaw(accountId, body("10.00", "\"EUR\"", "true", "\"Pay\"")),
+                400, "INVALID_DIRECTION");
+        assertErrors(problem, "direction", "INVALID_DIRECTION");
+        assertNothingChanged(accountId, before, 0, "EUR", "0.00");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"true", "{}", "\"\""})
+    void rejectsNonNumberAmountWithInvalidAmount(String amount) {
+        // §3 rule 4: a wrong JSON type (boolean, object, empty string) is a parse error mapped to the amount.
+        String accountId = api.createAccount("EUR");
+        int before = events.awaitEvents(accountId, 2).size();
+        JsonNode problem = expectProblem(
+                api.postTransactionRaw(accountId, body(amount, "\"EUR\"", "\"IN\"", "\"Pay\"")),
+                400, "INVALID_AMOUNT");
+        assertErrors(problem, "amount", "INVALID_AMOUNT");
+        assertNothingChanged(accountId, before, 0, "EUR", "0.00");
+    }
+
+    @Test
+    void reportsOnlyTheAmountParseErrorWhenAnotherFieldIsAlsoInvalid() {
+        // §3 rule 4: parsing stops at the first unreadable value, so the bad currency isn't reported.
+        String accountId = api.createAccount("EUR");
+        int before = events.awaitEvents(accountId, 2).size();
+        JsonNode problem = expectProblem(
+                api.postTransactionRaw(accountId, body("\"abc\"", "\"XXX\"", "\"IN\"", "\"Pay\"")),
+                400, "INVALID_AMOUNT");
+        assertErrors(problem, "amount", "INVALID_AMOUNT");
+        assertNothingChanged(accountId, before, 0, "EUR", "0.00");
+    }
+
+    @Test
+    void rejectsDuplicateDescriptionKeyWithValidationFailedAndNoErrors() {
+        // §3 rule 4: a duplicate key (any field) makes the document malformed: no errors[].
+        String accountId = api.createAccount("EUR");
+        int before = events.awaitEvents(accountId, 2).size();
+        JsonNode problem = expectProblem(api.postTransactionRaw(accountId, """
+                {"amount": 10.00, "currency": "EUR", "direction": "IN", "description": "First", "description": "Second"}
+                """), 400, "VALIDATION_FAILED");
+        assertThat(problem.has("errors")).as("errors[] in %s", problem).isFalse();
+        assertNothingChanged(accountId, before, 0, "EUR", "0.00");
+    }
+
+    @Test
+    void rejectsNonObjectBodyWithValidationFailedAndNoErrors() {
+        // §3 rule 4: a body that isn't a JSON object is not a well-formed request document.
+        String accountId = api.createAccount("EUR");
+        int before = events.awaitEvents(accountId, 2).size();
+        JsonNode problem = expectProblem(api.postTransactionRaw(accountId, "[]"), 400, "VALIDATION_FAILED");
+        assertThat(problem.has("errors")).as("errors[] in %s", problem).isFalse();
+        assertNothingChanged(accountId, before, 0, "EUR", "0.00");
+    }
+
+    @Test
+    void acceptsIntegerJsonNumberAmountAndReturnsItAtScale2() {
+        // §2: the amount is a JSON number; an integer such as 10 is still valid.
+        String accountId = api.createAccount("EUR");
+        int before = events.awaitEvents(accountId, 2).size();
+
+        EntityExchangeResult<String> result = api.postTransactionRaw(accountId,
+                body("10", "\"EUR\"", "\"IN\"", "\"Integer amount\""));
+        assertThat(result.getStatus().value()).as(result.getResponseBody()).isEqualTo(201);
+        JsonNode tx = JSON.readTree(result.getResponseBody());
+        assertTransaction(tx, accountId, "10.00", "EUR", "IN", "Integer amount", "10.00");
+
+        assertTransactionEvents(accountId, before, tx);
     }
 
     // ================================================================ POST several failures (§3 rule 3)

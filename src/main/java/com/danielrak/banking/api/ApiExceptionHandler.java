@@ -3,11 +3,15 @@ package com.danielrak.banking.api;
 import com.danielrak.banking.domain.AccountNotFoundException;
 import com.danielrak.banking.domain.CurrencyNotOpenException;
 import com.danielrak.banking.domain.InsufficientFundsException;
+import jakarta.validation.Validator;
+import jakarta.validation.metadata.ConstraintDescriptor;
+import jakarta.validation.metadata.PropertyDescriptor;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.MethodParameter;
@@ -27,6 +31,8 @@ import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.DatabindException;
 
 /**
  * Maps failures to RFC 9457 ProblemDetails with a {@code code}, per design.md §3. Every response,
@@ -47,6 +53,12 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     /** One entry of {@code errors[]}. */
     record FieldProblem(String field, ErrorCode code, String message) {
+    }
+
+    private final Validator validator;
+
+    ApiExceptionHandler(Validator validator) {
+        this.validator = validator;
     }
 
     @Override
@@ -72,6 +84,13 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     protected ResponseEntity<Object> handleHttpMessageNotReadable(
             HttpMessageNotReadableException ex, HttpHeaders headers, HttpStatusCode status, WebRequest request) {
         ProblemDetail body = problem(HttpStatus.BAD_REQUEST, "Malformed request body", ErrorCode.VALIDATION_FAILED);
+        // A value of the wrong JSON type or format gets its field's code (§3 rule 4). Stream-level
+        // errors (syntax, duplicate key) stay VALIDATION_FAILED, even when Jackson attached a path.
+        if (ex.getCause() instanceof DatabindException cause && !cause.getPath().isEmpty()) {
+            FieldProblem error = fieldProblem(cause.getPath());
+            body.setProperty("code", error.code().name());
+            body.setProperty("errors", List.of(error));
+        }
         return handleExceptionInternal(ex, body, headers, status, request);
     }
 
@@ -141,6 +160,47 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     private ResponseEntity<Object> internalError(Exception ex, WebRequest request) {
         ProblemDetail body = problem(HttpStatus.INTERNAL_SERVER_ERROR, "Internal server error", ErrorCode.INTERNAL_ERROR);
         return handleExceptionInternal(ex, body, new HttpHeaders(), HttpStatus.INTERNAL_SERVER_ERROR, request);
+    }
+
+    /**
+     * The failing value's JSON path, and the code of the constraint on that field: a list element
+     * uses the element constraint ({@code currencies[1]} → {@code INVALID_CURRENCY}).
+     */
+    private FieldProblem fieldProblem(List<JacksonException.Reference> path) {
+        StringBuilder field = new StringBuilder();
+        for (JacksonException.Reference ref : path) {
+            if (ref.getPropertyName() != null) {
+                field.append(field.isEmpty() ? "" : ".").append(ref.getPropertyName());
+            } else {
+                field.append('[').append(ref.getIndex()).append(']');
+            }
+        }
+        // Today's bodies are flat: a field, or an element of a list field. Anything deeper is VALIDATION_FAILED.
+        ErrorCode code = ErrorCode.VALIDATION_FAILED;
+        JacksonException.Reference first = path.getFirst();
+        boolean element = path.size() == 2 && path.get(1).getPropertyName() == null;
+        if (first.getPropertyName() != null && first.from() != null && (path.size() == 1 || element)) {
+            // A record creator reports its class; other deserializers report the instance.
+            Class<?> type = first.from() instanceof Class<?> c ? c : first.from().getClass();
+            code = fieldCode(type, first.getPropertyName(), element);
+        }
+        return new FieldProblem(field.toString(), code, "malformed value");
+    }
+
+    /** The highest-priority code among the field's constraints, as validation would report it. */
+    private ErrorCode fieldCode(Class<?> type, String property, boolean element) {
+        PropertyDescriptor descriptor = validator.getConstraintsForClass(type).getConstraintsForProperty(property);
+        if (descriptor == null) {
+            return ErrorCode.VALIDATION_FAILED;
+        }
+        Stream<ConstraintDescriptor<?>> constraints = element
+                ? descriptor.getConstrainedContainerElementTypes().stream().flatMap(c -> c.getConstraintDescriptors().stream())
+                : descriptor.getConstraintDescriptors().stream();
+        return constraints
+                .map(c -> FIELD_CODES.get(c.getAnnotation().annotationType().getSimpleName()))
+                .filter(Objects::nonNull)
+                .min(Comparator.naturalOrder())
+                .orElse(ErrorCode.VALIDATION_FAILED);
     }
 
     private static boolean isUuidPathVariable(MethodParameter parameter) {

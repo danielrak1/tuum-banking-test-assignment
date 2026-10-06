@@ -3,6 +3,7 @@ package com.danielrak.banking.api;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.danielrak.banking.domain.AccountNotFoundException;
+import jakarta.validation.Validation;
 import java.lang.reflect.Method;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -29,7 +30,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 @ExtendWith(OutputCaptureExtension.class)
 class ApiExceptionHandlerTest {
 
-    private final ApiExceptionHandler handler = new ApiExceptionHandler();
+    private final ApiExceptionHandler handler = new ApiExceptionHandler(Validation.buildDefaultValidatorFactory().getValidator());
     private final ServletWebRequest request =
             new ServletWebRequest(new MockHttpServletRequest("GET", "/accounts/x"), new MockHttpServletResponse());
 
