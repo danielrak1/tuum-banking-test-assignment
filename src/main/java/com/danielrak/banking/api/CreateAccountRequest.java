@@ -6,7 +6,6 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
-import jakarta.validation.constraints.Size;
 import java.util.List;
 import org.hibernate.validator.constraints.UniqueElements;
 
@@ -16,7 +15,8 @@ import org.hibernate.validator.constraints.UniqueElements;
  * {@code @SupportedCurrency}, so {@code @ArraySchema} restates its values; {@code OpenApiIT} checks them.
  */
 public record CreateAccountRequest(
-        @NotBlank @Size(max = 64) @FreeText String customerId,
+        @Schema(maxLength = 64)
+        @NotBlank @MaxCodePoints(64) @FreeText String customerId,
         @NotNull @Pattern(regexp = "[A-Z]{2}") String country,
         @ArraySchema(schema = @Schema(allowableValues = {"EUR", "SEK", "GBP", "USD"}), uniqueItems = true)
         @NotEmpty @UniqueElements List<@SupportedCurrency String> currencies) {

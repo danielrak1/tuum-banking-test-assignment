@@ -109,6 +109,53 @@ class AccountApiIT {
         assertThat(body.get("customerId").asString()).isEqualTo(customerId);
     }
 
+    // §2: lengths count Unicode code points (an emoji is 1), not UTF-16 units.
+    private static final String EMOJI = Character.toString(0x1F600);
+
+    @Test
+    void acceptsCustomerIdOf64EmojiAndStoresItUnchanged() {
+        String customerId = EMOJI.repeat(64);
+        assertThat(customerId.codePointCount(0, customerId.length())).isEqualTo(64);
+        assertThat(customerId).as("128 UTF-16 units").hasSize(128);
+        assertCreatedWithCustomerIdUnchanged(customerId);
+    }
+
+    @Test
+    void acceptsCustomerIdOf63AsciiPlusOneEmojiAs64CodePoints() {
+        // 64 code points, 65 UTF-16 units: a @Size(max = 64) check would reject it.
+        String customerId = uniqueCustomerId() + "x".repeat(25) + EMOJI;
+        assertThat(customerId.codePointCount(0, customerId.length())).isEqualTo(64);
+        assertThat(customerId).as("65 UTF-16 units").hasSize(65);
+        assertCreatedWithCustomerIdUnchanged(customerId);
+    }
+
+    @Test
+    void rejectsCustomerIdOf65EmojiWithValidationFailedAndPublishesNothing() {
+        // No unique marker fits a body made only of emoji, so after the fence assert that no
+        // account.created event carries exactly this customerId.
+        String customerId = EMOJI.repeat(65);
+        JsonNode problem = expectProblem(api.postAccountRaw("""
+                {"customerId": "%s", "country": "EE", "currencies": ["EUR"]}
+                """.formatted(customerId)), 400, "VALIDATION_FAILED");
+        assertErrors(problem, "customerId", "VALIDATION_FAILED");
+        events.fence();
+        assertThat(events.eventsMatching(e -> "account.created".equals(e.eventType())
+                && customerId.equals(e.data().path("customerId").asString())))
+                .as("account.created events with the 65-emoji customerId").isEmpty();
+    }
+
+    @Test
+    void rejectsCustomerIdOf65CodePointsMadeOfAsciiMarkerAndEmoji() {
+        String marker = uniqueCustomerId();
+        String customerId = marker + EMOJI.repeat(65 - marker.length());
+        assertThat(customerId.codePointCount(0, customerId.length())).isEqualTo(65);
+        JsonNode problem = expectProblem(api.postAccountRaw("""
+                {"customerId": "%s", "country": "EE", "currencies": ["EUR"]}
+                """.formatted(customerId)), 400, "VALIDATION_FAILED");
+        assertErrors(problem, "customerId", "VALIDATION_FAILED");
+        events.assertNoEventMentions(marker);
+    }
+
     // ---------------------------------------------------------------- INVALID_CURRENCY (§3)
 
     static Stream<Arguments> invalidCurrencyElements() {
@@ -538,6 +585,21 @@ class AccountApiIT {
                 """.formatted(customerId, country, list));
         assertThat(result.getStatus().value()).as(result.getResponseBody()).isEqualTo(201);
         return JSON.readTree(result.getResponseBody());
+    }
+
+    private void assertCreatedWithCustomerIdUnchanged(String customerId) {
+        EntityExchangeResult<String> result = api.postAccountRaw("""
+                {"customerId": "%s", "country": "EE", "currencies": ["EUR"]}
+                """.formatted(customerId));
+        assertThat(result.getStatus().value()).as(result.getResponseBody()).isEqualTo(201);
+        JsonNode body = JSON.readTree(result.getResponseBody());
+        String accountId = body.get("accountId").asString();
+        assertThat(body.get("customerId").asString()).isEqualTo(customerId);
+
+        JsonNode fetched = JSON.readTree(api.getAccountRaw(accountId).getResponseBody());
+        assertThat(fetched.get("customerId").asString()).isEqualTo(customerId);
+
+        assertThat(accountCreatedEvent(accountId).data().get("customerId").asString()).isEqualTo(customerId);
     }
 
     private static String text(JsonNode node, String name) {

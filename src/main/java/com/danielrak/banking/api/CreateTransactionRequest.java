@@ -3,7 +3,6 @@ package com.danielrak.banking.api;
 import static io.swagger.v3.oas.annotations.media.Schema.RequiredMode.REQUIRED;
 
 import io.swagger.v3.oas.annotations.media.Schema;
-import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 
 /**
@@ -21,6 +20,6 @@ public record CreateTransactionRequest(
         @SupportedCurrency String currency,
         @Schema(requiredMode = REQUIRED, allowableValues = {"IN", "OUT"})
         @SupportedDirection String direction,
-        @Schema(requiredMode = REQUIRED)
-        @DescriptionPresent @Size(max = 255) @FreeText String description) {
+        @Schema(requiredMode = REQUIRED, maxLength = 255)
+        @DescriptionPresent @MaxCodePoints(255) @FreeText String description) {
 }

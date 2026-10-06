@@ -267,6 +267,56 @@ class TransactionApiIT {
         assertThat(added.getFirst().data().get("description").asString()).isEqualTo(expected);
     }
 
+    // §2: lengths count Unicode code points (an emoji is 1), not UTF-16 units.
+    private static final String EMOJI = Character.toString(0x1F600);
+
+    @Test
+    void acceptsDescriptionOf255EmojiAndStoresItUnchanged() {
+        String description = EMOJI.repeat(255);
+        assertThat(description.codePointCount(0, description.length())).isEqualTo(255);
+        assertThat(description).as("510 UTF-16 units").hasSize(510);
+        assertAcceptedDescriptionStoredUnchanged(description);
+    }
+
+    @Test
+    void acceptsDescriptionOf254AsciiPlusOneEmojiAs255CodePoints() {
+        // 255 code points, 256 UTF-16 units: a @Size(max = 255) check would reject it.
+        String description = "d".repeat(254) + EMOJI;
+        assertThat(description.codePointCount(0, description.length())).isEqualTo(255);
+        assertThat(description).as("256 UTF-16 units").hasSize(256);
+        assertAcceptedDescriptionStoredUnchanged(description);
+    }
+
+    @Test
+    void rejectsDescriptionOf256EmojiWithValidationFailedAndChangesNothing() {
+        String accountId = api.createAccount("EUR");
+        int before = events.awaitEvents(accountId, 2).size();
+
+        JsonNode problem = expectProblem(
+                api.postTransaction(accountId, "10.00", "EUR", "IN", EMOJI.repeat(256)),
+                400, "VALIDATION_FAILED");
+        assertErrors(problem, "description", "VALIDATION_FAILED");
+        assertNothingChanged(accountId, before, 0, "EUR", "0.00");
+    }
+
+    private void assertAcceptedDescriptionStoredUnchanged(String description) {
+        String accountId = api.createAccount("EUR");
+        int before = events.awaitEvents(accountId, 2).size();
+
+        EntityExchangeResult<String> result = api.postTransaction(accountId, "10.00", "EUR", "IN", description);
+        assertThat(result.getStatus().value()).as(result.getResponseBody()).isEqualTo(201);
+        JsonNode tx = JSON.readTree(result.getResponseBody());
+        assertTransaction(tx, accountId, "10.00", "EUR", "IN", description, "10.00");
+
+        List<JsonNode> list = api.listTransactions(accountId);
+        assertThat(list).hasSize(1);
+        assertThat(list.get(0).get("description").asString()).isEqualTo(description);
+        assertThat(api.balance(accountId, "EUR")).isEqualByComparingTo(new BigDecimal("10.00"));
+
+        List<Event> added = assertTransactionEvents(accountId, before, tx);
+        assertThat(added.getFirst().data().get("description").asString()).isEqualTo(description);
+    }
+
     @Test
     void rejectsDuplicateAmountKeyWithValidationFailed() {
         // §3 rule 4: a duplicate key makes the document malformed; it doesn't get the field's code.
