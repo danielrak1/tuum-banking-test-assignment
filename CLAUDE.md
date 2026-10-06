@@ -24,6 +24,11 @@ The image builds with `bootJar` (no tests). Health (`/actuator/health`, the comp
 app + DB only; RabbitMQ is left out on purpose, because the outbox lets the app serve through a broker outage.
 Coverage report: `build/reports/jacoco/test/html/index.html`.
 
+Hooks (`.claude/settings.json`, scripts in `.claude/hooks/`) gate the work: a `.java` edit is compiled,
+`git commit` runs `./gradlew check` first (about 1 min after a code change, about 1 s when check is
+UP-TO-DATE; log in `build/hooks/`), and an edit to a committed
+`V*.sql` is blocked. A block is a real failure: fix the cause, never route around the gate with a Bash edit.
+
 ## Stack
 Java 25 · Spring Boot 4.1 (`spring-boot-starter-webmvc`, Jackson 3 = `tools.jackson`) · MyBatis
 starter 4.1 · Flyway · Spring AMQP · springdoc 3 · JUnit 5 + Testcontainers 2. Versions are pinned in
