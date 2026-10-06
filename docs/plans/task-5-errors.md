@@ -1,6 +1,6 @@
 # Task 5: Errors (`feat/errors`)
 
-> **Status:** planned 2026-10-06.
+> **Status:** done 2026-10-06 (PR #?). Built as planned; outcome at the end.
 
 ## Context
 This is Stage 3, task 5 of 7 in `docs/sdlc-plan.md`, item 6 ("errors") in the build order. Today every
@@ -123,3 +123,23 @@ Mismatches and ambiguities are shown to you before anything changes.
   and `"description": 42` against a real account, and confirm each 400 body. Also check that
   `/v3/api-docs` returns 200 and lists both controllers, since springdoc uses the same JSON mapper and
   the coercion change is global.
+
+## Outcome
+- **Built:** steps 1–5 as planned. Jackson 3.1.5 details: `JacksonException.Reference.from()` (not
+  `getFrom()`). A record creator reports its `Class`, and a list reports its instance.
+- **Tests:** the five `@Disabled` tests are enabled, and the duplicate-key one was edited by hand
+  (decision 1). test-writer added 11 rule 4 tests (13 cases): 7 in `TransactionApiIT`, 4 in
+  `AccountApiIT`. It found no spec-vs-code mismatches. Its ambiguities needed no change:
+  - "no `errors[]`" means the property is absent;
+  - `""` and `{}` amounts get `INVALID_AMOUNT` either way;
+  - with several unreadable values, which one is reported depends on document order, and the
+    spec leaves it unspecified.
+- **`./gradlew check`:** 189 tests, 0 failed, 0 skipped. Coverage: lines 0.95, branches 0.868.
+- **Manual check (compose + bootRun):**
+  - `"amount": "10.50"` → 400 `INVALID_AMOUNT` with `errors[amount]`;
+  - a duplicate `amount` key → 400 `VALIDATION_FAILED` with no `errors[]`;
+  - `"description": 42` → 400 `DESCRIPTION_MISSING`;
+  - nothing was posted;
+  - `/v3/api-docs` → 200, with all three paths and the Accounts and Transactions tags.
+- **Review:** `/code-review low` on `JsonInputConfiguration` and `ApiExceptionHandler` found no
+  correctness bugs.
