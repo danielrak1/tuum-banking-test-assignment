@@ -18,6 +18,7 @@ docker compose up -d postgres rabbitmq            # dev: brokers only, then…
 ./gradlew bootRun                                 # …app on :8080 against them; Swagger UI at /swagger-ui.html
 .claude/skills/verify/verify.sh                   # check + a clean stack on other ports + contract check + teardown, one summary
 scripts/contract-check.sh [BASE_URL] [MGMT_URL]   # the PDF's requests and errors (and events) against a running stack
+scripts/load-test.sh [--label L] [--runs N]       # k6 create-transaction TPS/p95 + outbox lag on a fresh stack; docs/performance.md
 ```
 The image builds with `bootJar` (no tests). Health (`/actuator/health`, the compose healthcheck) is
 app + DB only; RabbitMQ is left out on purpose, because the outbox lets the app serve through a broker outage.

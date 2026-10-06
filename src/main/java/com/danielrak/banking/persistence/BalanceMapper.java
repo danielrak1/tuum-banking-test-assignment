@@ -21,9 +21,6 @@ public interface BalanceMapper {
     @Select("SELECT currency, available_amount FROM balance WHERE account_id = #{accountId} ORDER BY currency")
     List<Balance> findByAccountId(UUID accountId);
 
-    @Select("SELECT EXISTS (SELECT 1 FROM balance WHERE account_id = #{accountId} AND currency = #{currency})")
-    boolean exists(UUID accountId, Currency currency);
-
     /**
      * Adds {@code delta} (negative for OUT) only if the result stays ≥ 0, and returns the new amount;
      * empty if the condition failed. A concurrent writer waits on the row lock, then Postgres

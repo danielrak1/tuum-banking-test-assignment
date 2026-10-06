@@ -306,7 +306,10 @@ The full test plan is Stage 4 (`docs/test-plan.md`). The design commits to these
 - **No outbox latency tuning:** events are published up to one poll interval (~200 ms) after commit.
 - **Publish throughput:** the poller waits for each confirm before sending the next row, which keeps
   per-balance order through a nack (ADR-0003). One publisher therefore sends at most one event per
-  broker round trip. The Stage 4 k6 run shows whether this matters.
+  broker round trip. It matters: the Stage 4 k6 run measured about 3,300 events/s with an idle API,
+  and 1,150–2,800 under load. At 2 events per transaction, events keep up only below about
+  1,650 TPS at best, and about 575 TPS under heavy load, while the API takes about 7,400. Above that, the lag grows for as long as the load lasts
+  (`docs/performance.md`).
 - **Docker image build skips tests:** the Dockerfile builds with `bootJar`, which runs no tests, because
   Testcontainers can't run inside `docker build`. Tests and the coverage gate belong to
   `./gradlew check` (locally and in CI).

@@ -73,6 +73,17 @@ unpolished on purpose. Sorted by theme, with the task where each happened.
 - **Deferrals were written down** (in `docs/sdlc-plan.md` or as `@Disabled` tests) so they show up
   in every test report.
 
+## Environment flakiness (Stage 4B)
+- **A Testcontainers Ryuk flake:** the first `./gradlew check` right after the load runs failed 188 of
+  204 tests with `Could not connect to Ryuk at localhost:52022`. The re-run, with no changes, was
+  green. Docker had probably not recovered yet from minutes of sustained load. Before blaming the
+  code, read the root cause (`grep 'Caused by'` over `build/test-results`).
+- **Slow Docker container starts:** late in the session, `compose up --wait` took 805 s inside
+  `verify`. Every build step finished in about 1 s; the time went in starting containers. One perf
+  smoke run's app container started 12 minutes after Postgres. Earlier the same steps took about
+  20 s. Docker Desktop was likely worn down by the 1.1 M-event load runs. Restart Docker Desktop
+  between heavy load runs and timing-sensitive checks, and don't read slow starts as a regression.
+
 ## Skills
 - **The `add-endpoint` skill was revised after its first real use** (task 3): 14 gaps, including
   `Location` without a GET, 422 business exceptions, MyBatis `flushCache`, and test-writer not

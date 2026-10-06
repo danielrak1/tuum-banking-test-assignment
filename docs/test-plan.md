@@ -19,7 +19,7 @@ In the tables below:
 | **Integration** | The API, DB and broker together: every §2/§3/§5 rule, black-box over HTTP, with events read from `banking.events.all` | `*IT` on Testcontainers (Postgres 18, `rabbitmq:4-management`), one shared Spring context | ~2 min in total | `./gradlew check` |
 | **Convention** | Rules that would otherwise have to be remembered | `NotFoundCodeConventionTest` (every UUID path handler has `@NotFoundCode`; path variable before body) | ms | `./gradlew check` |
 | **Contract** | The packaged app as a reviewer runs it: image, compose, env config, Flyway on an empty DB, then every PDF request and error, plus events | `scripts/contract-check.sh` against `docker compose up --build --wait` | ~20 s, plus the image build | `verify`, and CI (Stage 5) |
-| **Load** | Throughput (TPS, p95) | k6, part B | minutes | by hand, for the README |
+| **Load** | Throughput (TPS, p95) of create-transaction, spread over 1,000 accounts and on one hot account, plus the outbox lag under load | `scripts/load-test.sh` (k6 from its Docker image, on a fresh `banking-perf` stack per run); results in `docs/performance.md` | ~3.5 min per run | by hand, for the README |
 | **Manual** | What automation doesn't cover: a real broker outage, a restart that keeps messages, the Swagger UI | the task plans' "Manual check" sections | – | per task |
 
 Most tests are integration tests on purpose. The risk in this service is where the parts meet:

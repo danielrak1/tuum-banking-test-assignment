@@ -6,6 +6,7 @@ import com.danielrak.banking.messaging.OutboxWriter;
 import com.danielrak.banking.messaging.TransactionCreatedData;
 import com.danielrak.banking.persistence.AccountMapper;
 import com.danielrak.banking.persistence.BalanceMapper;
+import com.danielrak.banking.persistence.Existence;
 import com.danielrak.banking.persistence.TransactionMapper;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -31,15 +32,18 @@ public class TransactionService {
     }
 
     /**
-     * Posts a transaction (ADR-0002): account existence, then the currency's balance, then the
-     * conditional balance update, then the transaction row and its events, {@code transaction.created}
+     * Posts a transaction (ADR-0002): account existence, then the currency's balance (one query for
+     * both), then the conditional balance update, then the transaction row and its events, {@code transaction.created}
      * then {@code balance.updated} (ADR-0003, ADR-0004).
      */
     @Transactional
     public Transaction create(UUID accountId, BigDecimal amount, Currency currency, Direction direction,
             String description) {
-        requireAccount(accountId);
-        if (!balanceMapper.exists(accountId, currency)) {
+        Existence existence = accountMapper.findExistence(accountId, currency);
+        if (!existence.account()) {
+            throw new AccountNotFoundException(accountId);
+        }
+        if (!existence.balance()) {
             throw new CurrencyNotOpenException(accountId, currency);
         }
 
@@ -68,13 +72,9 @@ public class TransactionService {
     /** The account's transactions in insert order ({@code seq}). */
     @Transactional(readOnly = true)
     public List<Transaction> list(UUID accountId) {
-        requireAccount(accountId);
-        return transactionMapper.findByAccountId(accountId);
-    }
-
-    private void requireAccount(UUID accountId) {
-        if (accountMapper.findById(accountId).isEmpty()) {
+        if (!accountMapper.exists(accountId)) {
             throw new AccountNotFoundException(accountId);
         }
+        return transactionMapper.findByAccountId(accountId);
     }
 }
