@@ -1,6 +1,6 @@
 # Task 6: Docker (`feat/docker`)
 
-> **Status:** in progress. Planned 2026-10-06 and approved with two changes (health without RabbitMQ, a real HTTP healthcheck).
+> **Status:** done 2026-10-06 (PR #6). Approved with two changes (health without RabbitMQ, a real HTTP healthcheck); outcome at the end.
 
 ## Context
 This is Stage 3, task 6 of 7 in `docs/sdlc-plan.md`, item 7 in the build order. Success criterion 5
@@ -142,3 +142,27 @@ the README (Stage 6).
     operationIds;
   - the RabbitMQ management API (banking/banking) shows the events on the demo queue;
   - `docker compose down -v`.
+
+## Outcome
+- **Built:** steps 1–6 as planned, with these deviations:
+  - **Layered extraction without `--launcher`.** The default layout (`app.jar` + `lib/`) is the one
+    `java -jar app.jar` runs. The image is 579 MB and runs as uid 999 `banking`, with the app files
+    owned by root (read-only to it).
+  - **The broker-paused health check was replaced** by a registry check (`leavesTheBrokerOutOfHealth`:
+    a `db` contributor and no `rabbit` one). With the rabbit indicator switched back on through an env
+    var, the paused-broker test still passed. `RabbitHealthIndicator` only reads
+    `getServerProperties()` from the cached connection, so a paused broker stays UP and the test
+    proved nothing. The registry check fails with the indicator on and passes with it off.
+- **`./gradlew check`:** 195 tests, 0 failed, 0 skipped. Coverage: lines 0.95, branches 0.868.
+- **Clean clone** (`git clone --branch feat/docker`, `docker compose up --build --wait`):
+  - all three services healthy in 18 s (with a warm BuildKit cache);
+  - Flyway applied V1 and V2 to an empty schema, and the app started in 1.4 s;
+  - create account → 201, IN → 201, an OUT over the balance → 422 `INSUFFICIENT_FUNDS`,
+    list → 200, an unknown account → 404, `/swagger-ui.html` → 200;
+  - `/v3/api-docs` has the four operationIds, `CreateTransactionRequest` requires all four fields
+    with the currency and direction enums, and `currencies` has the item enum with `uniqueItems`;
+  - the demo queue held the 5 events, readable as banking/banking; `guest` → 401;
+  - `docker compose stop rabbitmq`: the app stayed healthy, created an account and served GETs.
+    After `start`, that account's `account.created` and `balance.created` arrived.
+- **Dev stack:** recreated with the new user (banking 200, guest 401). The risk about `guest`
+  surviving didn't happen.
