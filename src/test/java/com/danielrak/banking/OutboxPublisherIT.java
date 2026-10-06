@@ -12,11 +12,18 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.amqp.core.AmqpAdmin;
+import org.springframework.amqp.core.Binding;
+import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.MessageDeliveryMode;
+import org.springframework.amqp.core.Queue;
+import org.springframework.amqp.core.TopicExchange;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.system.CapturedOutput;
@@ -34,7 +41,9 @@ import tools.jackson.databind.JsonNode;
  *       pending; once it is released, they are published in order and deleted;</li>
  *   <li>the failure path: a broker paused for longer than {@code banking.outbox.confirm-timeout} (2 s)
  *       makes a batch time out, the rows stay pending and are retried, and arrive (possibly twice) once
- *       the broker is back.</li>
+ *       the broker is back;</li>
+ *   <li>order through a nack: a row after a nacked one is not sent until the nacked one is acked, so it can
+ *       never reach a queue first.</li>
  * </ul>
  */
 @IntegrationTest
@@ -58,6 +67,9 @@ class OutboxPublisherIT {
 
     @Autowired
     RabbitMQContainer rabbitContainer;
+
+    @Autowired
+    AmqpAdmin amqpAdmin;
 
     BankingApi api;
     BankingEvents events;
@@ -132,6 +144,51 @@ class OutboxPublisherIT {
 
         assertThat(output.getOut()).contains("Outbox publishing failed, rows stay pending and are retried");
         await().atMost(BankingEvents.TIMEOUT).until(() -> output.getOut().contains("Outbox publishing recovered"));
+    }
+
+    /**
+     * The broker nacks {@code transaction.created} while a full {@code reject-publish} queue is bound to it, so a
+     * transaction's first row fails and its second ({@code balance.updated}) would be acked. The second must
+     * not be sent while the first is failing: if it were, a consumer would see the balance before the
+     * transaction, and after the retry an older state after a newer one.
+     */
+    @Test
+    void neverSendsALaterRowWhileAnEarlierOneIsNacked(CapturedOutput output) {
+        String accountId = api.createAccount("EUR");
+        events.awaitEvents(accountId, 2);
+
+        // Durable only because RabbitMQ 4 refuses transient non-exclusive queues; it is deleted in finally.
+        Queue rejecting = new Queue("test.reject." + UUID.randomUUID(), true, false, false,
+                Map.of("x-max-length", 0, "x-overflow", "reject-publish"));
+        Binding binding = BindingBuilder.bind(rejecting).to(new TopicExchange(BankingEvents.EXCHANGE))
+                .with("transaction.created");
+        amqpAdmin.declareQueue(rejecting);
+        amqpAdmin.declareBinding(binding);
+        try {
+            api.transact(accountId, "5.00", "EUR", "IN", "Nacked first");
+            await().atMost(BankingEvents.TIMEOUT).until(() -> output.getOut().contains("nacked"));
+            // Each retry is nacked again. Across several of them the later row is never sent, so it stays pending
+            // and never reaches the queue.
+            await().during(Duration.ofSeconds(2)).atMost(Duration.ofSeconds(4)).untilAsserted(() -> {
+                assertThat(events.pendingOutboxRows(accountId)).as("both rows stay pending").isEqualTo(2);
+                assertThat(events.events(accountId)).extracting(Event::routingKey)
+                        .as("the later row is not sent while the earlier one is nacked")
+                        .doesNotContain("balance.updated");
+            });
+        } finally {
+            amqpAdmin.deleteQueue(rejecting.getName());
+        }
+
+        await().atMost(Duration.ofSeconds(30)).untilAsserted(() -> {
+            assertThat(events.pendingOutboxRows(accountId)).as("published rows are deleted").isZero();
+            assertThat(events.events(accountId)).extracting(Event::routingKey).contains("balance.updated");
+        });
+        // A nacked message may still have reached the queues that accepted it, so transaction.created can appear
+        // more than once; what matters is that it first appears before balance.updated.
+        List<String> keys = events.events(accountId).stream().map(Event::routingKey).toList();
+        assertThat(keys.indexOf("transaction.created")).as("order on the queue: %s", keys)
+                .isNotNegative()
+                .isLessThan(keys.indexOf("balance.updated"));
     }
 
     private static void advisoryLock(Connection connection, String function) throws SQLException {

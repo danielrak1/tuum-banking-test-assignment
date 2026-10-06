@@ -15,8 +15,8 @@ then commits it.
 | 0. Setup | ✅ Done | JDK 25 (Temurin), Docker Desktop, gh CLI, IntelliJ + Claude Code plugin |
 | 1. Plan | ✅ Done | `intent.md` |
 | 2. Design | ✅ Done | `docs/design.md`, `docs/adr/*.md` |
-| 3. Build | 🚧 In progress: tasks 1–6 of 7 done (skeleton PR #1, create/get account PR #2, transactions PR #3, events PR #4, errors PR #5, docker PR #6) | code, `CLAUDE.md`, `.claude/skills/add-endpoint`, `.claude/agents/test-writer.md` |
-| 4. Test | ⬜ | tests, JaCoCo gate, `docs/test-plan.md`, contract check, k6 load test |
+| 3. Build | ✅ Done: tasks 1–6 cover all 7 build items (skeleton + schema PR #1, create/get account PR #2, transactions PR #3, events PR #4, errors PR #5, docker PR #6) | code, `CLAUDE.md`, `.claude/skills/add-endpoint`, `.claude/agents/test-writer.md`, `banking-reviewer.md`, `spec-checker.md` |
+| 4. Test | ⬜ | `docs/test-plan.md`, contract check, k6 load test, more tests (the JaCoCo gate and the core integration tests were built in Stage 3) |
 | 5. Deploy | ⬜ | hooks, PR review loop, `.github/workflows/ci.yml` |
 | 6. Maintain | ⬜ | `docs/retro.md`, final README |
 
@@ -95,8 +95,7 @@ then commits it.
      - strict request JSON: string amounts, duplicate keys (`VALIDATION_FAILED`) and scalar
        coercion into string fields are rejected;
      - the five `@Disabled("task 6: …")` tests are enabled.
-     Still open (out of task 5's scope): a 422 instead of a 500 for an `IN` that would overflow
-     `NUMERIC(19,2)` (design.md §8; no test yet, because the code is still to be decided).
+     The balance-overflow 422 was out of task 5's scope. It is deferred to the Stage 4 carry-overs.
   7. docker ✅ (`docs/plans/task-6-docker.md`):
      - a multi-stage Dockerfile (Gradle wrapper on a JDK, `bootJar`, layered extraction, a non-root JRE);
      - compose runs the app after healthy Postgres and RabbitMQ, with its own RabbitMQ user (`guest`
@@ -124,12 +123,18 @@ then commits it.
 - **Throughput:** a k6 script, run through its Docker image, measures TPS and p95 latency. Results go in the README.
 - **Carried over from the task 3 review:**
   - `@Size` counts UTF-16 code units, while design.md says characters and Postgres counts code
-    points. 128 emoji are rejected as more than 255. This only over-rejects. Decide whether to count
-    code points.
+    points. 128 emoji are rejected as more than 255, and the same goes for `customerId`'s 64. This only
+    over-rejects. Decide whether to count code points.
   - Move `AccountApiIT` and `ProtocolErrorsIT` onto the shared `BankingApi` test helper. Their
     private copies (`JSON`, `expectProblem`, `errors`, …) have already drifted.
   - Throughput: fold `TransactionService.create`'s two existence checks (account, balance) into one
     `SELECT EXISTS …, EXISTS …`, and use `AccountMapper.exists` instead of mapping the whole account row.
+- **Carried over from the post-build audit (banking-reviewer, spec-checker):**
+  - Balance overflow (design.md §8): a 422 instead of a 500 for an `IN` that pushes a balance past
+    `NUMERIC(19,2)`. The audit rated it Low and it stays deferred. When it is built, translate
+    SQLSTATE 22003 at the boundary, not inside `@Transactional`: Postgres has already aborted the
+    transaction. Don't add an upper bound to `applyDelta`'s `WHERE` either, because a 0-row `IN`
+    would then fail as an `IllegalStateException`.
 - Write the **`verify` skill**, which chains all of the above.
 
 ## Stage 5: Deploy
@@ -152,11 +157,16 @@ then commits it.
   - what to change next time
 - Run `/revise-claude-md`.
 - Finish the README with every deliverable the PDF asks for: build and run, key choices, TPS, horizontal scaling, AI usage.
+  Future work to list there: idempotency keys, and a version field in `balance.updated` (design.md §9).
+  Also note that health serves as both liveness and readiness, and that ports 5432, 5672, 15672 and 8080
+  must be free.
 
 ## Definition of done
 - `docker compose up --build` on a clean clone starts everything, with the schema created automatically.
-- `./gradlew check` is green, with coverage ≥ 80% enforced.
+- `./gradlew check` is green, with line and branch coverage ≥ 80% enforced.
 - The contract check passes. The concurrency test and the "events never lost" test pass.
 - Events can be seen in the RabbitMQ UI (localhost:15672).
 - The TPS figure is recorded. CI is green on the final PR. Every hook has been seen blocking.
 - The README and `docs/retro.md` are complete.
+- The repo is accessible to the assignment's reviewers (PDF, Handover): N/A, because this is a practice
+  run and is not submitted.

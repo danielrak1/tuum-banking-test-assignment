@@ -28,9 +28,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 /**
  * Publishes {@code outbox_event} rows to {@code banking.events} and deletes them once the broker confirms
  * (ADR-0003). Each batch runs in one transaction that holds an advisory lock, so across instances only one
- * publisher runs at a time, in {@code id} order. A batch stops at the first nack, timeout or error; that row
- * and every later one stay for the next poll. Delivery is at-least-once: a row that timed out, or was sent
- * after one that failed, may already be on the queue and is sent again.
+ * publisher runs at a time, in {@code id} order. Each row is sent only after the previous one is confirmed, and
+ * a batch stops at the first nack, timeout or error: that row and every later one stay for the next poll, and
+ * the later ones haven't been sent. Delivery is at-least-once: a row whose confirm timed out may already be on
+ * the queue and is sent again.
  *
  * <p>A row that fails every time stalls publishing on purpose: order over availability (ADR-0003). Every
  * failure goes through one path: the batch's acked rows are still deleted and committed, then the failure is
@@ -137,26 +138,25 @@ public class OutboxPublisher {
     }
 
     /**
-     * Sends every row on one channel, then waits for the confirms in order, adding the IDs of the acked prefix
-     * to {@code acked}. Stopping at the first failure means a failed row is never overtaken by a later one,
-     * which keeps per-balance order. Returns the failure, or null if every row was acked.
+     * Sends the rows one at a time on one channel, waiting for each confirm before sending the next, and adds
+     * the IDs of the acked rows to {@code acked}. A row is only sent once every earlier row is acked, so a failed
+     * row is never overtaken by a later one: per-balance order holds through a nack or a timeout. Sending the
+     * whole batch before waiting would not: a row after a nacked one could be acked and enqueued first. The
+     * batch shares one confirm deadline, which bounds how long its transaction stays open. Returns the failure,
+     * or null if every row was acked.
      */
     private Failure publish(List<OutboxRow> rows, List<Long> acked) {
         try {
             return rabbitTemplate.invoke(ops -> {
-                List<CorrelationData> confirms = new ArrayList<>(rows.size());
+                long deadline = System.nanoTime() + confirmTimeout.toNanos();
                 for (OutboxRow row : rows) {
                     CorrelationData correlation = new CorrelationData(row.eventId().toString());
                     ops.send(MessagingConfiguration.EXCHANGE, row.routingKey(), toMessage(row), correlation);
-                    confirms.add(correlation);
-                }
-                long deadline = System.nanoTime() + confirmTimeout.toNanos();
-                for (int i = 0; i < rows.size(); i++) {
-                    Failure failure = awaitAck(confirms.get(i), rows.get(i), deadline);
+                    Failure failure = awaitAck(correlation, row, deadline);
                     if (failure != null) {
                         return failure;
                     }
-                    acked.add(rows.get(i).id());
+                    acked.add(row.id());
                 }
                 return null;
             });

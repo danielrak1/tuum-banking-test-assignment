@@ -10,7 +10,7 @@ and the ADRs in [`docs/adr/`](docs/adr/). SDLC stages and status: [`docs/sdlc-pl
 Gradle is not installed locally; always use the wrapper. Docker must be running (Testcontainers).
 
 ```sh
-./gradlew check                                   # compile, all tests, JaCoCo gate (lines ≥ 0.80, branches ≥ 0.70)
+./gradlew check                                   # compile, all tests, JaCoCo gate (lines and branches ≥ 0.80)
 ./gradlew test --tests 'com.danielrak.banking.SomeTest'           # one class
 ./gradlew test --tests 'com.danielrak.banking.SomeTest.someMethod' # one method
 docker compose up --build                         # full stack: Postgres :5432, RabbitMQ :5672, UI :15672 (banking/banking), app :8080

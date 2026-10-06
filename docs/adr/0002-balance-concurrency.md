@@ -108,9 +108,9 @@ reintroduces the race.
 - **Revisit:** for extreme single-account TPS, split the balance into sub-balance rows or batch postings.
 
 ## Action Items
-1. [ ] Add the `BalanceMapper.applyDelta(accountId, currency, delta)` mapper method, returning `Optional<BigDecimal>`.
-2. [ ] Add `CHECK (available_amount >= 0)` in `V1__init.sql`.
-3. [ ] Write the concurrency integration test (design.md §6): N parallel `OUT`s mixed with `IN`s.
+1. [x] Add the `BalanceMapper.applyDelta(accountId, currency, delta)` mapper method, returning `Optional<BigDecimal>`.
+2. [x] Add `CHECK (available_amount >= 0)` in `V1__init.sql`.
+3. [x] Write the concurrency integration test (design.md §6): N parallel `OUT`s mixed with `IN`s.
    Assert the balance never goes below 0, that exactly ⌊B/a⌋ `OUT`s succeed, that the sums reconcile,
    and that the last `balanceAfter` by `seq` equals the stored balance.
-4. [ ] Add to `CLAUDE.md`: "balances change only through `applyDelta`".
+4. [x] Add to `CLAUDE.md`: "balances change only through `applyDelta`".

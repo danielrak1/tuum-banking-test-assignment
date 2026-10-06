@@ -23,16 +23,19 @@ Use a **transactional outbox**:
    1. Opens a transaction and calls `pg_try_advisory_xact_lock(<outbox key>)`. If the lock is not
       acquired, it returns immediately, because another instance is publishing.
    2. Reads `SELECT … FROM outbox_event ORDER BY id LIMIT 100`.
-   3. Publishes each row to `banking.events` with correlated publisher confirms
-      (`spring.rabbitmq.publisher-confirm-type=correlated`), and waits for each confirm with a timeout.
+   3. Publishes the rows to `banking.events` one at a time, with correlated publisher confirms
+      (`spring.rabbitmq.publisher-confirm-type=correlated`). It waits for each row's confirm before
+      sending the next, within one timeout for the whole batch.
    4. `DELETE`s every acked row, then commits.
 3. **On nack, timeout, or connection failure:** stop the batch and leave the remaining rows.
-   They are retried on the next poll.
+   They are retried on the next poll. The rows after the failed one were never sent, so none of them
+   can reach a queue before it. Sending the whole batch first and then waiting would break this: a
+   later row could be acked while an earlier one is nacked, and per-balance order would be lost.
 
 **Guarantee: at-least-once.** A crash after the broker acks but before the `DELETE` commits
-re-publishes that row. Duplicates also follow any publish failure: a message whose confirm timed out
-may still have reached the queue, and rows sent after a nack or timeout in the same batch are sent
-again on the next poll. Consumers dedupe on `eventId` (= AMQP `message_id`).
+re-publishes that row. Duplicates also follow any publish failure: a message whose confirm timed out,
+or that was nacked, may still have reached a queue (a nack can come from one queue while the others
+accepted it), and it is sent again on the next poll. Consumers dedupe on `eventId` (= AMQP `message_id`).
 
 **Not used:** `mandatory`/publisher returns. The service declares a demo queue bound to `#`, so
 every message is routable. Without that queue, a message no queue is bound for would still be acked,
@@ -115,7 +118,8 @@ a designed contract unless it is combined with an outbox anyway.
 - **Harder:**
   - Consumers must be idempotent.
   - Tests must wait for asynchronous publication (Awaitility), not assert immediately.
-  - Event throughput is capped by one poller; the README notes this under scaling.
+  - Event throughput is capped by one poller; the README notes this under scaling. Waiting for each
+    confirm before the next send costs one broker round trip per event.
   - **A row that fails every time stalls publishing, by design: order over availability.** If the
     broker nacks a row, or never confirms it, on every attempt, that row and every row after it in
     `id` order stay pending. The poller keeps retrying with backoff, and logs WARN again every 60 s
@@ -134,8 +138,8 @@ a designed contract unless it is combined with an outbox anyway.
   - Outbox table bloat at very high volume (vacuum tuning, partitioning).
 
 ## Action Items
-1. [ ] Add the `outbox_event` table in `V1__init.sql` (`id bigserial`, `event_id uuid UNIQUE`, `routing_key`, `payload jsonb`, `created_at`).
-2. [ ] Add `OutboxWriter`, called by services in the business transaction.
+1. [x] Add the `outbox_event` table in `V1__init.sql` (`id bigserial`, `event_id uuid UNIQUE`, `routing_key`, `payload jsonb`, `created_at`). `payload` is `json` since `V2` (design.md §4).
+2. [x] Add `OutboxWriter`, called by services in the business transaction.
 3. [x] Add `OutboxPublisher`: `@Scheduled`, advisory xact lock, batch, correlated confirms, `DELETE` on ack.
 4. [x] Declare the `banking.events` topic exchange and the `banking.events.all` demo queue bound to `#`.
 5. [x] Tests:
