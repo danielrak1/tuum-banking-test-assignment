@@ -49,6 +49,14 @@ class OpenApiIT {
         assertThat(strings(schema.at("/properties/direction/enum"))).containsExactlyElementsOf(names(Direction.values()));
     }
 
+    /** Lengths count code points (design.md §2), as JSON Schema's maxLength does. */
+    @Test
+    void showsFreeTextMaxLengths() {
+        JsonNode schemas = apiDocs().at("/components/schemas");
+        assertThat(schemas.at("/CreateAccountRequest/properties/customerId/maxLength").asInt()).isEqualTo(64);
+        assertThat(schemas.at("/CreateTransactionRequest/properties/description/maxLength").asInt()).isEqualTo(255);
+    }
+
     @Test
     void showsAccountCurrenciesWithTheirEnum() {
         JsonNode currencies = apiDocs().at("/components/schemas/CreateAccountRequest/properties/currencies");

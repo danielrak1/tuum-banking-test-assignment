@@ -84,6 +84,12 @@ final class BankingEvents {
     }
 
     /** Events whose raw body contains {@code marker}: for rejected requests that have no account ID. */
+    /** A rejected request published nothing: after the fence, no event mentions {@code marker}. */
+    void assertNoEventMentions(String marker) {
+        fence();
+        assertThat(eventsMentioning(marker)).as("events mentioning %s", marker).isEmpty();
+    }
+
     List<Event> eventsMentioning(String marker) {
         return received(e -> e.body().contains(marker));
     }

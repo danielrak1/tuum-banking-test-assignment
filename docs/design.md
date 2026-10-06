@@ -89,6 +89,9 @@ an ADR in [`docs/adr/`](adr/):
 | `amount` | JSON number (a JSON string such as `"10.50"` is rejected), > 0, at most 2 decimals, at most 17 integer digits (`NUMERIC(19,2)`). Trailing zeros don't count: `10.500` is 10.50 and `1e2` is 100.00. The response always has scale 2. (`@ValidAmount`, ADR-0001) |
 | `description` | Free text: not blank, ≤ 255 characters. Unicode spaces such as U+00A0 count as blank. |
 
+- **Lengths count Unicode code points** (an emoji is 1), the way Postgres counts `varchar(n)` and
+  JSON Schema counts `maxLength`. That's `@MaxCodePoints`, not `@Size`, which counts UTF-16 units and
+  would reject 64 emoji as 128.
 - **Free-text fields** (`customerId`, `description`) are single-line and stored exactly as sent.
   They reject:
   - control characters (U+0000–U+001F, U+007F–U+009F), including tab, newline, NEL and NUL.

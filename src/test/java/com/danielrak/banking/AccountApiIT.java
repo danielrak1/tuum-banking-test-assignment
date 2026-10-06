@@ -1,5 +1,11 @@
 package com.danielrak.banking;
 
+import static com.danielrak.banking.BankingApi.JSON;
+import static com.danielrak.banking.BankingApi.assertErrors;
+import static com.danielrak.banking.BankingApi.errors;
+import static com.danielrak.banking.BankingApi.expectProblem;
+import static com.danielrak.banking.BankingApi.fieldNames;
+import static com.danielrak.banking.BankingApi.uniqueCustomerId;
 import static com.danielrak.banking.BankingEvents.assertEnvelope;
 import static com.danielrak.banking.BankingEvents.routingKeys;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -28,21 +34,11 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.client.EntityExchangeResult;
 import org.springframework.test.web.servlet.client.RestTestClient;
-import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.cfg.JsonNodeFeature;
-import tools.jackson.databind.json.JsonMapper;
 
 /** Black-box contract tests for POST /accounts and GET /accounts/{accountId}: design.md §2 (API), §3 (errors), §5 (events). */
 @IntegrationTest
 class AccountApiIT {
-
-    private static final JsonMapper JSON = JsonMapper.builder()
-            .enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
-            .disable(JsonNodeFeature.STRIP_TRAILING_BIGDECIMAL_ZEROES)
-            .build();
-
-    private static final MediaType PROBLEM_JSON = MediaType.APPLICATION_PROBLEM_JSON;
 
     @Autowired
     RestTestClient client;
@@ -53,11 +49,13 @@ class AccountApiIT {
     @Autowired
     RabbitTemplate rabbitTemplate;
 
+    BankingApi api;
     BankingEvents events;
 
     @BeforeEach
     void setUp() {
-        events = new BankingEvents(rabbitTemplate, new BankingApi(client), jdbc);
+        api = new BankingApi(client);
+        events = new BankingEvents(rabbitTemplate, api, jdbc);
     }
 
     // ---------------------------------------------------------------- success (§2)
@@ -65,7 +63,7 @@ class AccountApiIT {
     @Test
     void createsAccountWithLocationAndZeroBalancesOrderedByCurrency() {
         String customerId = uniqueCustomerId();
-        EntityExchangeResult<String> result = post("""
+        EntityExchangeResult<String> result = api.postAccountRaw("""
                 {"customerId": "%s", "country": "EE", "currencies": ["USD", "SEK", "EUR", "GBP"]}
                 """.formatted(customerId));
 
@@ -111,6 +109,53 @@ class AccountApiIT {
         assertThat(body.get("customerId").asString()).isEqualTo(customerId);
     }
 
+    // §2: lengths count Unicode code points (an emoji is 1), not UTF-16 units.
+    private static final String EMOJI = Character.toString(0x1F600);
+
+    @Test
+    void acceptsCustomerIdOf64EmojiAndStoresItUnchanged() {
+        String customerId = EMOJI.repeat(64);
+        assertThat(customerId.codePointCount(0, customerId.length())).isEqualTo(64);
+        assertThat(customerId).as("128 UTF-16 units").hasSize(128);
+        assertCreatedWithCustomerIdUnchanged(customerId);
+    }
+
+    @Test
+    void acceptsCustomerIdOf63AsciiPlusOneEmojiAs64CodePoints() {
+        // 64 code points, 65 UTF-16 units: a @Size(max = 64) check would reject it.
+        String customerId = uniqueCustomerId() + "x".repeat(25) + EMOJI;
+        assertThat(customerId.codePointCount(0, customerId.length())).isEqualTo(64);
+        assertThat(customerId).as("65 UTF-16 units").hasSize(65);
+        assertCreatedWithCustomerIdUnchanged(customerId);
+    }
+
+    @Test
+    void rejectsCustomerIdOf65EmojiWithValidationFailedAndPublishesNothing() {
+        // No unique marker fits a body made only of emoji, so after the fence assert that no
+        // account.created event carries exactly this customerId.
+        String customerId = EMOJI.repeat(65);
+        JsonNode problem = expectProblem(api.postAccountRaw("""
+                {"customerId": "%s", "country": "EE", "currencies": ["EUR"]}
+                """.formatted(customerId)), 400, "VALIDATION_FAILED");
+        assertErrors(problem, "customerId", "VALIDATION_FAILED");
+        events.fence();
+        assertThat(events.eventsMatching(e -> "account.created".equals(e.eventType())
+                && customerId.equals(e.data().path("customerId").asString())))
+                .as("account.created events with the 65-emoji customerId").isEmpty();
+    }
+
+    @Test
+    void rejectsCustomerIdOf65CodePointsMadeOfAsciiMarkerAndEmoji() {
+        String marker = uniqueCustomerId();
+        String customerId = marker + EMOJI.repeat(65 - marker.length());
+        assertThat(customerId.codePointCount(0, customerId.length())).isEqualTo(65);
+        JsonNode problem = expectProblem(api.postAccountRaw("""
+                {"customerId": "%s", "country": "EE", "currencies": ["EUR"]}
+                """.formatted(customerId)), 400, "VALIDATION_FAILED");
+        assertErrors(problem, "customerId", "VALIDATION_FAILED");
+        events.assertNoEventMentions(marker);
+    }
+
     // ---------------------------------------------------------------- INVALID_CURRENCY (§3)
 
     static Stream<Arguments> invalidCurrencyElements() {
@@ -125,7 +170,7 @@ class AccountApiIT {
     @MethodSource("invalidCurrencyElements")
     void rejectsUnsupportedOrNullCurrencyElementWithInvalidCurrency(String label, String currencies, String field) {
         String customerId = uniqueCustomerId();
-        JsonNode problem = expectProblem(post("""
+        JsonNode problem = expectProblem(api.postAccountRaw("""
                 {"customerId": "%s", "country": "EE", "currencies": %s}
                 """.formatted(customerId, currencies)), 400, "INVALID_CURRENCY");
 
@@ -133,7 +178,7 @@ class AccountApiIT {
         assertThat(errors).hasSize(1);
         assertThat(errors.get(0).get("field").asString()).isEqualTo(field);
         assertThat(errors.get(0).get("code").asString()).isEqualTo("INVALID_CURRENCY");
-        assertNoEventMentions(customerId);
+        events.assertNoEventMentions(customerId);
     }
 
     // ---------------------------------------------------------------- VALIDATION_FAILED (§3)
@@ -215,7 +260,7 @@ class AccountApiIT {
         // §2: free text is stored exactly as sent; a valid surrogate pair (an emoji) is not rejected.
         String prefix = uniqueCustomerId();
         String customerId = prefix + " Pay 😀";
-        EntityExchangeResult<String> result = post("""
+        EntityExchangeResult<String> result = api.postAccountRaw("""
                 {"customerId": "%s Pay \\ud83d\\ude00", "country": "EE", "currencies": ["EUR"]}
                 """.formatted(prefix));
         assertThat(result.getStatus().value()).as(result.getResponseBody()).isEqualTo(201);
@@ -223,7 +268,7 @@ class AccountApiIT {
         String accountId = body.get("accountId").asString();
         assertThat(body.get("customerId").asString()).isEqualTo(customerId);
 
-        JsonNode fetched = JSON.readTree(get(accountId).getResponseBody());
+        JsonNode fetched = JSON.readTree(api.getAccountRaw(accountId).getResponseBody());
         assertThat(fetched.get("customerId").asString()).isEqualTo(customerId);
 
         assertThat(accountCreatedEvent(accountId).data().get("customerId").asString()).isEqualTo(customerId);
@@ -231,7 +276,7 @@ class AccountApiIT {
 
     @Test
     void rejectsNumericCustomerIdWithValidationFailed() {
-        JsonNode problem = expectProblem(post("""
+        JsonNode problem = expectProblem(api.postAccountRaw("""
                 {"customerId": 12345, "country": "EE", "currencies": ["EUR"]}
                 """), 400, "VALIDATION_FAILED");
         List<JsonNode> errors = errors(problem);
@@ -248,43 +293,43 @@ class AccountApiIT {
     void rejectsNonStringCurrencyElementWithInvalidCurrencyAtItsIndex() {
         // §3 rule 4: a list element is mapped with the element rule (INVALID_CURRENCY) and its indexed path.
         String customerId = uniqueCustomerId();
-        JsonNode problem = expectProblem(post("""
+        JsonNode problem = expectProblem(api.postAccountRaw("""
                 {"customerId": "%s", "country": "EE", "currencies": ["EUR", 1]}
                 """.formatted(customerId)), 400, "INVALID_CURRENCY");
-        assertSingleError(problem, "currencies[1]", "INVALID_CURRENCY");
-        assertNoEventMentions(customerId);
+        assertErrors(problem, "currencies[1]", "INVALID_CURRENCY");
+        events.assertNoEventMentions(customerId);
     }
 
     @Test
     void rejectsStringCurrenciesWithValidationFailedOnTheListField() {
         // §3 rule 4: the list field itself gets VALIDATION_FAILED, not the element code.
         String customerId = uniqueCustomerId();
-        JsonNode problem = expectProblem(post("""
+        JsonNode problem = expectProblem(api.postAccountRaw("""
                 {"customerId": "%s", "country": "EE", "currencies": "EUR"}
                 """.formatted(customerId)), 400, "VALIDATION_FAILED");
-        assertSingleError(problem, "currencies", "VALIDATION_FAILED");
-        assertNoEventMentions(customerId);
+        assertErrors(problem, "currencies", "VALIDATION_FAILED");
+        events.assertNoEventMentions(customerId);
     }
 
     @Test
     void rejectsNumericCountryWithValidationFailed() {
         String customerId = uniqueCustomerId();
-        JsonNode problem = expectProblem(post("""
+        JsonNode problem = expectProblem(api.postAccountRaw("""
                 {"customerId": "%s", "country": 42, "currencies": ["EUR"]}
                 """.formatted(customerId)), 400, "VALIDATION_FAILED");
-        assertSingleError(problem, "country", "VALIDATION_FAILED");
-        assertNoEventMentions(customerId);
+        assertErrors(problem, "country", "VALIDATION_FAILED");
+        events.assertNoEventMentions(customerId);
     }
 
     @Test
     void rejectsSyntaxErrorInsideListWithValidationFailedAndNoErrors() {
         // §3 rule 4: a syntax error is a malformed document even inside a list: no errors[].
         String customerId = uniqueCustomerId();
-        JsonNode problem = expectProblem(post("""
+        JsonNode problem = expectProblem(api.postAccountRaw("""
                 {"customerId": "%s", "country": "EE", "currencies": ["EUR" "USD"]}
                 """.formatted(customerId)), 400, "VALIDATION_FAILED");
         assertThat(problem.has("errors")).as("errors[] in %s", problem).isFalse();
-        assertNoEventMentions(customerId);
+        events.assertNoEventMentions(customerId);
     }
 
     @Test
@@ -295,7 +340,7 @@ class AccountApiIT {
         String accountId = body.get("accountId").asString();
         assertThat(body.get("customerId").asString()).isEqualTo(customerId);
 
-        JsonNode fetched = JSON.readTree(get(accountId).getResponseBody());
+        JsonNode fetched = JSON.readTree(api.getAccountRaw(accountId).getResponseBody());
         assertThat(fetched.get("customerId").asString()).isEqualTo(customerId);
 
         assertThat(accountCreatedEvent(accountId).data().get("customerId").asString()).isEqualTo(customerId);
@@ -304,14 +349,14 @@ class AccountApiIT {
     @ParameterizedTest(name = "{0}")
     @MethodSource("validationFailures")
     void rejectsInvalidFieldWithValidationFailed(String label, String json, String field, String marker) {
-        JsonNode problem = expectProblem(post(json), 400, "VALIDATION_FAILED");
+        JsonNode problem = expectProblem(api.postAccountRaw(json), 400, "VALIDATION_FAILED");
 
         List<JsonNode> errors = errors(problem);
         assertThat(errors).hasSize(1);
         assertThat(errors.get(0).get("field").asString()).isEqualTo(field);
         assertThat(errors.get(0).get("code").asString()).isEqualTo("VALIDATION_FAILED");
         if (marker != null) {
-            assertNoEventMentions(marker);
+            events.assertNoEventMentions(marker);
         } else {
             assertNoAccountCreatedWithBlankCustomerId();
         }
@@ -324,15 +369,15 @@ class AccountApiIT {
             "not json %s"})
     void rejectsMalformedJsonWithValidationFailed(String template) {
         String marker = uniqueCustomerId();
-        expectProblem(post(template.formatted(marker)), 400, "VALIDATION_FAILED");
-        assertNoEventMentions(marker);
+        expectProblem(api.postAccountRaw(template.formatted(marker)), 400, "VALIDATION_FAILED");
+        events.assertNoEventMentions(marker);
     }
 
     // ---------------------------------------------------------------- several failures (§3 rule 3)
 
     @Test
     void reportsAllFailingFieldsWithCurrencyFirstAndFullProblemShape() {
-        JsonNode problem = expectProblem(post("""
+        JsonNode problem = expectProblem(api.postAccountRaw("""
                 {"customerId": "", "country": "ee", "currencies": ["JPY"]}
                 """), 400, "INVALID_CURRENCY");
 
@@ -359,7 +404,7 @@ class AccountApiIT {
     @Test
     void reportsInvalidCurrencyFirstWhenCurrencyAndCountryFail() {
         String customerId = uniqueCustomerId();
-        JsonNode problem = expectProblem(post("""
+        JsonNode problem = expectProblem(api.postAccountRaw("""
                 {"customerId": "%s", "country": "EST", "currencies": [null, "GBP", "usd"]}
                 """.formatted(customerId)), 400, "INVALID_CURRENCY");
 
@@ -369,7 +414,7 @@ class AccountApiIT {
         assertThat(errors.get(0).get("field").asString()).isEqualTo("currencies[0]");
         assertThat(errors.get(1).get("field").asString()).isEqualTo("currencies[2]");
         assertThat(errors.get(2).get("field").asString()).isEqualTo("country");
-        assertNoEventMentions(customerId);
+        events.assertNoEventMentions(customerId);
     }
 
     // ---------------------------------------------------------------- events (§5)
@@ -424,7 +469,7 @@ class AccountApiIT {
         JsonNode created = createAccount(customerId, "LV", "USD", "EUR", "SEK");
         String accountId = created.get("accountId").asString();
 
-        EntityExchangeResult<String> result = get(accountId);
+        EntityExchangeResult<String> result = api.getAccountRaw(accountId);
         assertThat(result.getStatus().value()).as(result.getResponseBody()).isEqualTo(200);
         MediaType contentType = result.getResponseHeaders().getContentType();
         assertThat(contentType).isNotNull();
@@ -456,7 +501,7 @@ class AccountApiIT {
     @Test
     void rejectsUnknownAccountIdWith404AccountNotFound() {
         String unknownId = UUID.randomUUID().toString();
-        JsonNode problem = expectProblem(get(unknownId), 404, "ACCOUNT_NOT_FOUND");
+        JsonNode problem = expectProblem(api.getAccountRaw(unknownId), 404, "ACCOUNT_NOT_FOUND");
         assertThat(text(problem, "instance")).isEqualTo("/accounts/" + unknownId);
     }
 
@@ -470,7 +515,7 @@ class AccountApiIT {
             "123e4567-e89b-12d3-a456-426614174000a",   // valid canonical UUID plus one trailing character
             "123e4567e89b12d3a456426614174000"})       // the 32 hex digits without dashes
     void rejectsMalformedAccountIdWith400AccountNotFound(String malformedId) {
-        JsonNode problem = expectProblem(get(malformedId), 400, "ACCOUNT_NOT_FOUND");
+        JsonNode problem = expectProblem(api.getAccountRaw(malformedId), 400, "ACCOUNT_NOT_FOUND");
         assertThat(text(problem, "instance")).isEqualTo("/accounts/" + malformedId);
     }
 
@@ -494,7 +539,7 @@ class AccountApiIT {
         String upper = accountId.toUpperCase(Locale.ROOT);
         assertThat(upper).as("ID contains hex letters, so uppercasing changes it").isNotEqualTo(accountId);
 
-        EntityExchangeResult<String> result = get(upper);
+        EntityExchangeResult<String> result = api.getAccountRaw(upper);
         assertThat(result.getStatus().value()).as(result.getResponseBody()).isEqualTo(200);
 
         JsonNode body = JSON.readTree(result.getResponseBody());
@@ -524,7 +569,7 @@ class AccountApiIT {
         List<Event> before = events.awaitEvents(accountId, 3);
         assertThat(routingKeys(before)).containsExactly("account.created", "balance.created", "balance.created");
 
-        EntityExchangeResult<String> result = get(accountId);
+        EntityExchangeResult<String> result = api.getAccountRaw(accountId);
         assertThat(result.getStatus().value()).as(result.getResponseBody()).isEqualTo(200);
 
         events.fence();
@@ -533,64 +578,33 @@ class AccountApiIT {
 
     // ---------------------------------------------------------------- helpers
 
-    private EntityExchangeResult<String> get(String accountId) {
-        return client.get().uri("/accounts/{accountId}", accountId)
-                .exchange()
-                .returnResult(String.class);
-    }
-
-    private EntityExchangeResult<String> post(String json) {
-        return client.post().uri("/accounts")
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(json)
-                .exchange()
-                .returnResult(String.class);
-    }
-
     private JsonNode createAccount(String customerId, String country, String... currencies) {
         String list = String.join(", ", Stream.of(currencies).map(c -> "\"" + c + "\"").toList());
-        EntityExchangeResult<String> result = post("""
+        EntityExchangeResult<String> result = api.postAccountRaw("""
                 {"customerId": "%s", "country": "%s", "currencies": [%s]}
                 """.formatted(customerId, country, list));
         assertThat(result.getStatus().value()).as(result.getResponseBody()).isEqualTo(201);
         return JSON.readTree(result.getResponseBody());
     }
 
-    private JsonNode expectProblem(EntityExchangeResult<String> result, int status, String code) {
-        assertThat(result.getStatus().value()).as(result.getResponseBody()).isEqualTo(status);
-        MediaType contentType = result.getResponseHeaders().getContentType();
-        assertThat(contentType).isNotNull();
-        assertThat(contentType.isCompatibleWith(PROBLEM_JSON))
-                .as("Content-Type %s", contentType).isTrue();
-        JsonNode problem = JSON.readTree(result.getResponseBody());
-        assertThat(problem.get("status").asInt()).isEqualTo(status);
-        assertThat(problem.path("code").asString()).isEqualTo(code);
-        return problem;
-    }
+    private void assertCreatedWithCustomerIdUnchanged(String customerId) {
+        EntityExchangeResult<String> result = api.postAccountRaw("""
+                {"customerId": "%s", "country": "EE", "currencies": ["EUR"]}
+                """.formatted(customerId));
+        assertThat(result.getStatus().value()).as(result.getResponseBody()).isEqualTo(201);
+        JsonNode body = JSON.readTree(result.getResponseBody());
+        String accountId = body.get("accountId").asString();
+        assertThat(body.get("customerId").asString()).isEqualTo(customerId);
 
-    private static List<JsonNode> errors(JsonNode problem) {
-        JsonNode errors = problem.get("errors");
-        assertThat(errors).as("errors[] present").isNotNull();
-        assertThat(errors.isArray()).isTrue();
-        List<JsonNode> list = new ArrayList<>();
-        errors.forEach(list::add);
-        return list;
-    }
+        JsonNode fetched = JSON.readTree(api.getAccountRaw(accountId).getResponseBody());
+        assertThat(fetched.get("customerId").asString()).isEqualTo(customerId);
 
-    private static void assertSingleError(JsonNode problem, String field, String code) {
-        List<JsonNode> errors = errors(problem);
-        assertThat(errors).as("errors[] of %s", problem).hasSize(1);
-        assertThat(errors.get(0).get("field").asString()).isEqualTo(field);
-        assertThat(errors.get(0).get("code").asString()).isEqualTo(code);
+        assertThat(accountCreatedEvent(accountId).data().get("customerId").asString()).isEqualTo(customerId);
     }
 
     private static String text(JsonNode node, String name) {
         JsonNode value = node.get(name);
         return value == null || value.isNull() ? null : value.asString();
-    }
-
-    private static List<String> fieldNames(JsonNode node) {
-        return new ArrayList<>(node.propertyNames());
     }
 
     /** The account's {@code account.created} event (§5), once published. */
@@ -600,12 +614,6 @@ class AccountApiIT {
         assertThat(first.eventType()).as("first event of %s", accountId).isEqualTo("account.created");
         assertEnvelope(first, accountId);
         return first;
-    }
-
-    /** A rejected request published nothing: after the fence, no event mentions {@code marker}. */
-    private void assertNoEventMentions(String marker) {
-        events.fence();
-        assertThat(events.eventsMentioning(marker)).as("events mentioning %s", marker).isEmpty();
     }
 
     /** After the fence, no {@code account.created} event (from any test) has a blank or missing customerId. */
@@ -618,10 +626,6 @@ class AccountApiIT {
 
     private static boolean blankOrMissing(JsonNode value) {
         return value == null || value.isNull() || (value.isString() && value.asString().isBlank());
-    }
-
-    private static String uniqueCustomerId() {
-        return "C-" + UUID.randomUUID();
     }
 
     private static String randomSuffix(int length) {

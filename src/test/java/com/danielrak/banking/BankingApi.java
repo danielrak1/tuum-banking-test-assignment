@@ -35,24 +35,37 @@ final class BankingApi {
 
     // ---------------------------------------------------------------- accounts
 
+    /** A customer ID no other test uses, so it can serve as an event marker. */
+    static String uniqueCustomerId() {
+        return "C-" + UUID.randomUUID();
+    }
+
+    EntityExchangeResult<String> postAccountRaw(String json) {
+        return client.post().uri("/accounts")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(json)
+                .exchange()
+                .returnResult(String.class);
+    }
+
     /** Creates an account holding the given currencies and returns its ID. */
     String createAccount(String... currencies) {
         String list = String.join(", ", Stream.of(currencies).map(c -> "\"" + c + "\"").toList());
-        EntityExchangeResult<String> result = client.post().uri("/accounts")
-                .contentType(MediaType.APPLICATION_JSON)
-                .body("""
-                      {"customerId": "C-%s", "country": "EE", "currencies": [%s]}
-                      """.formatted(UUID.randomUUID(), list))
-                .exchange()
-                .returnResult(String.class);
+        EntityExchangeResult<String> result = postAccountRaw("""
+                {"customerId": "%s", "country": "EE", "currencies": [%s]}
+                """.formatted(uniqueCustomerId(), list));
         assertThat(result.getStatus().value()).as(result.getResponseBody()).isEqualTo(201);
         return JSON.readTree(result.getResponseBody()).get("accountId").asString();
     }
 
-    JsonNode getAccount(String accountId) {
-        EntityExchangeResult<String> result = client.get().uri("/accounts/{accountId}", accountId)
+    EntityExchangeResult<String> getAccountRaw(String accountId) {
+        return client.get().uri("/accounts/{accountId}", accountId)
                 .exchange()
                 .returnResult(String.class);
+    }
+
+    JsonNode getAccount(String accountId) {
+        EntityExchangeResult<String> result = getAccountRaw(accountId);
         assertThat(result.getStatus().value()).as(result.getResponseBody()).isEqualTo(200);
         return JSON.readTree(result.getResponseBody());
     }
@@ -117,6 +130,7 @@ final class BankingApi {
         MediaType contentType = result.getResponseHeaders().getContentType();
         assertThat(contentType).as(diagnostics).isNotNull();
         assertThat(contentType.isCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON)).as(diagnostics).isTrue();
+        assertThat(result.getResponseBody()).as(diagnostics).isNotBlank();
         JsonNode problem = JSON.readTree(result.getResponseBody());
         assertThat(problem.path("status").asInt()).as(diagnostics).isEqualTo(status);
         assertThat(problem.path("code").asString()).as(diagnostics).isEqualTo(code);
@@ -142,6 +156,13 @@ final class BankingApi {
                 .map(e -> e.path("field").asString() + "=" + e.path("code").asString())
                 .toList();
         assertThat(actual).as("errors[] of %s", problem).containsExactlyElementsOf(expected);
+    }
+
+    static void assertJsonContentType(EntityExchangeResult<String> result) {
+        MediaType contentType = result.getResponseHeaders().getContentType();
+        assertThat(contentType).isNotNull();
+        assertThat(contentType.isCompatibleWith(MediaType.APPLICATION_JSON))
+                .as("Content-Type %s", contentType).isTrue();
     }
 
     static List<String> fieldNames(JsonNode node) {
