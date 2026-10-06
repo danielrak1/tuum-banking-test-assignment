@@ -1,0 +1,10 @@
+# The image is built from the wrapper, the build scripts and src only (see Dockerfile).
+.git
+.gradle
+build
+.idea
+.claude
+docs
+*.md
+.env
+*.local

@@ -15,7 +15,7 @@ then commits it.
 | 0. Setup | ✅ Done | JDK 25 (Temurin), Docker Desktop, gh CLI, IntelliJ + Claude Code plugin |
 | 1. Plan | ✅ Done | `intent.md` |
 | 2. Design | ✅ Done | `docs/design.md`, `docs/adr/*.md` |
-| 3. Build | 🚧 In progress: tasks 1–5 of 7 done (skeleton PR #1, create/get account PR #2, transactions PR #3, events PR #4, errors PR #5) | code, `CLAUDE.md`, `.claude/skills/add-endpoint`, `.claude/agents/test-writer.md` |
+| 3. Build | 🚧 In progress: tasks 1–6 of 7 done (skeleton PR #1, create/get account PR #2, transactions PR #3, events PR #4, errors PR #5, docker PR #6) | code, `CLAUDE.md`, `.claude/skills/add-endpoint`, `.claude/agents/test-writer.md` |
 | 4. Test | ⬜ | tests, JaCoCo gate, `docs/test-plan.md`, contract check, k6 load test |
 | 5. Deploy | ⬜ | hooks, PR review loop, `.github/workflows/ci.yml` |
 | 6. Maintain | ⬜ | `docs/retro.md`, final README |
@@ -97,15 +97,16 @@ then commits it.
      - the five `@Disabled("task 6: …")` tests are enabled.
      Still open (out of task 5's scope): a 422 instead of a 500 for an `IN` that would overflow
      `NUMERIC(19,2)` (design.md §8; no test yet, because the code is still to be decided).
-  7. multi-stage Dockerfile, and docker-compose with healthchecks. RabbitMQ's `guest` user only
-     works from loopback, so the app container can't use it: set `RABBITMQ_DEFAULT_USER`/`RABBITMQ_DEFAULT_PASS`
-     on the broker, and give the app env overrides (`SPRING_DATASOURCE_URL`, `SPRING_RABBITMQ_HOST`,
-     `SPRING_RABBITMQ_USERNAME`, `SPRING_RABBITMQ_PASSWORD`) pointing at the compose services.
-     Also, springdoc (task 3 review): Swagger UI is how reviewers explore the API (intent.md), but
-     the OpenAPI schema doesn't show the validator-based rules. Add
-     `@Schema(requiredMode = REQUIRED, allowableValues = …)` on the request records, so `amount`,
-     `currency` and `direction` show as required with their enums. Also set explicit
-     `@Operation(operationId = …)`: today the two `create` methods collide as `create_1`.
+  7. docker ✅ (`docs/plans/task-6-docker.md`):
+     - a multi-stage Dockerfile (Gradle wrapper on a JDK, `bootJar`, layered extraction, a non-root JRE);
+     - compose runs the app after healthy Postgres and RabbitMQ, with its own RabbitMQ user (`guest`
+       is loopback-only) and connection env vars;
+     - Actuator health is app + DB only (the RabbitMQ indicator is off, ADR-0003), and the compose
+       healthcheck polls it with a real HTTP GET;
+     - springdoc shows the required fields and enums, with explicit operationIds, and `OpenApiIT`
+       guards both.
+     For the README: health serves as both liveness and readiness, and the host ports (5432, 5672,
+     15672, 8080) must be free.
 
 ## Stage 4: Test (deep)
 - Write `docs/test-plan.md` with `engineering:testing-strategy`. Every API error in the PDF maps to a test.

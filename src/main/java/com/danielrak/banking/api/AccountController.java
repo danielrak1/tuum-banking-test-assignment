@@ -34,7 +34,7 @@ public class AccountController {
     }
 
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
-    @Operation(summary = "Create an account with a zero balance in each currency")
+    @Operation(operationId = "createAccount", summary = "Create an account with a zero balance in each currency")
     @ApiResponse(responseCode = "201", description = "Account created; Location points to it")
     @ApiResponse(responseCode = "400",
             description = "INVALID_CURRENCY for an unsupported or null currency; VALIDATION_FAILED otherwise",
@@ -49,7 +49,7 @@ public class AccountController {
 
     @GetMapping(path = "/{accountId}", produces = MediaType.APPLICATION_JSON_VALUE)
     @NotFoundCode(ErrorCode.ACCOUNT_NOT_FOUND)
-    @Operation(summary = "Get an account with its balances")
+    @Operation(operationId = "getAccount", summary = "Get an account with its balances")
     @ApiResponse(responseCode = "200", description = "The account, balances in currency order")
     @ApiResponse(responseCode = "400", description = "ACCOUNT_NOT_FOUND: the ID is not a UUID",
             content = @Content(mediaType = "application/problem+json",

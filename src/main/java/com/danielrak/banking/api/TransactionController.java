@@ -41,7 +41,8 @@ public class TransactionController {
      */
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     @NotFoundCode(ErrorCode.ACCOUNT_MISSING)
-    @Operation(summary = "Post an IN or OUT transaction and return it with the balance after it")
+    @Operation(operationId = "createTransaction",
+            summary = "Post an IN or OUT transaction and return it with the balance after it")
     @ApiResponse(responseCode = "201", description = "Transaction posted; balanceAfter is the new balance")
     @ApiResponse(responseCode = "400",
             description = "INVALID_CURRENCY, INVALID_DIRECTION, INVALID_AMOUNT or DESCRIPTION_MISSING for that field; "
@@ -65,7 +66,8 @@ public class TransactionController {
 
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
     @NotFoundCode(ErrorCode.INVALID_ACCOUNT)
-    @Operation(summary = "List an account's transactions in the order they were posted")
+    @Operation(operationId = "listTransactions",
+            summary = "List an account's transactions in the order they were posted")
     @ApiResponse(responseCode = "200", description = "The transactions, oldest first; [] if none")
     @ApiResponse(responseCode = "400", description = "INVALID_ACCOUNT: the ID is not a UUID",
             content = @Content(mediaType = "application/problem+json",

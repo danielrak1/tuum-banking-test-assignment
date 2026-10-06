@@ -8,11 +8,20 @@ spring:
   rabbitmq:
     host: localhost
     port: 5672
-    username: guest
-    password: guest
+    username: banking   # compose's own user: guest only works from loopback
+    password: banking
     publisher-confirm-type: correlated   # ADR-0003
     connection-timeout: 5s     # don't hang the outbox poller, and its open DB transaction, on a dead broker
     channel-rpc-timeout: 5s    # default 10 min: a channel.open against a paused broker would block that long
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  health:
+    rabbit:
+      enabled: false   # the app serves without the broker by design (ADR-0003), so health is app + DB
 
 banking:
   outbox:   # ADR-0003
