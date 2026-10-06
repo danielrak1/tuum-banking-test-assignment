@@ -1,8 +1,10 @@
 package com.danielrak.banking;
 
 import static com.danielrak.banking.BankingApi.JSON;
+import static com.danielrak.banking.BankingEvents.assertEnvelope;
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.danielrak.banking.BankingEvents.Event;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -18,6 +20,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -27,7 +30,8 @@ import tools.jackson.databind.JsonNode;
 
 /**
  * Success criterion 3 (intent.md), design.md §6: balances never go negative under concurrent
- * transactions on one balance, the ledger reconciles, and rejected requests emit no events.
+ * transactions on one balance, the ledger reconciles, and rejected requests emit no events. Also the §5
+ * per-balance ordering: {@code balance.updated} events arrive in {@code seq} order.
  */
 @IntegrationTest
 class BalanceConcurrencyIT {
@@ -40,11 +44,16 @@ class BalanceConcurrencyIT {
     @Autowired
     JdbcTemplate jdbc;
 
+    @Autowired
+    RabbitTemplate rabbitTemplate;
+
     BankingApi api;
+    BankingEvents events;
 
     @BeforeEach
     void setUp() {
-        api = new BankingApi(client, jdbc);
+        api = new BankingApi(client);
+        events = new BankingEvents(rabbitTemplate, api, jdbc);
     }
 
     record Request(String amount, String direction) { }
@@ -55,7 +64,7 @@ class BalanceConcurrencyIT {
     void concurrentOutsSucceedExactlyFloorOfBalanceOverAmountAndNeverGoNegative() throws Exception {
         String accountId = api.createAccount("EUR");
         api.transact(accountId, "100.00", "EUR", "IN", "Opening");
-        long outboxAfterOpening = api.maxOutboxId(accountId);
+        int eventsAfterOpening = events.awaitEvents(accountId, 4).size();
 
         List<Request> requests = new ArrayList<>();
         for (int i = 0; i < 50; i++) {
@@ -83,14 +92,14 @@ class BalanceConcurrencyIT {
                 .isEqualByComparingTo(stored);
         assertRunningBalance(list);
 
-        assertOutboxMatches(accountId, outboxAfterOpening, created);
+        assertEventsMatch(accountId, eventsAfterOpening, created, list);
     }
 
     @Test
     void concurrentMixedInsAndOutsReconcileAsConsistentRunningBalance() throws Exception {
         String accountId = api.createAccount("EUR");
         JsonNode opening = api.transact(accountId, "50.00", "EUR", "IN", "Opening");
-        long outboxAfterOpening = api.maxOutboxId(accountId);
+        int eventsAfterOpening = events.awaitEvents(accountId, 4).size();
 
         List<Request> requests = new ArrayList<>();
         for (int i = 0; i < 60; i++) {
@@ -147,7 +156,7 @@ class BalanceConcurrencyIT {
         assertThat(balanceAfter(list.getLast())).as("last balanceAfter = stored balance")
                 .isEqualByComparingTo(stored);
 
-        assertOutboxMatches(accountId, outboxAfterOpening, created);
+        assertEventsMatch(accountId, eventsAfterOpening, created, list);
     }
 
     // ---------------------------------------------------------------- helpers
@@ -207,13 +216,37 @@ class BalanceConcurrencyIT {
         }
     }
 
-    private void assertOutboxMatches(String accountId, long afterId, List<Response> created) {
-        List<Map<String, Object>> rows = api.outboxRowsAfter(accountId, afterId);
-        assertThat(rows).as("2 outbox rows per 201, none for 422s").hasSize(2 * created.size());
-        assertThat(rows.stream().filter(r -> "transaction.created".equals(r.get("routing_key"))))
+    /**
+     * Exactly 2 events per 201 and none for a 422 (§6 "no phantom events"), and the §5 per-balance order:
+     * the {@code balance.updated} events, in arrival order, follow {@code list} ({@code seq} order), each
+     * carrying that transaction's {@code balanceAfter}.
+     */
+    private void assertEventsMatch(String accountId, int before, List<Response> created, List<JsonNode> list) {
+        events.awaitEvents(accountId, before + 2 * created.size());
+        events.fence();
+        List<Event> all = events.events(accountId);
+        assertThat(all).as("2 events per 201, none for 422s").hasSize(before + 2 * created.size());
+        List<Event> added = all.subList(before, all.size());
+        assertThat(added.stream().filter(e -> "transaction.created".equals(e.routingKey())))
                 .hasSize(created.size());
-        assertThat(rows.stream().filter(r -> "balance.updated".equals(r.get("routing_key"))))
+        assertThat(added.stream().filter(e -> "balance.updated".equals(e.routingKey())))
                 .hasSize(created.size());
+        added.forEach(e -> assertEnvelope(e, accountId));
+
+        List<Event> balanceUpdates = all.stream()
+                .filter(e -> "balance.updated".equals(e.routingKey()))
+                .filter(e -> "EUR".equals(e.data().path("currency").asString()))
+                .toList();
+        assertThat(balanceUpdates.stream().map(e -> e.data().path("transactionId").asString()).toList())
+                .as("balance.updated transactionIds in arrival order = GET /transactions in seq order")
+                .containsExactlyElementsOf(list.stream().map(tx -> tx.get("transactionId").asString()).toList());
+        for (int i = 0; i < list.size(); i++) {
+            JsonNode amount = balanceUpdates.get(i).data().get("availableAmount");
+            assertThat(amount.decimalValue())
+                    .as("balance.updated[%d] availableAmount = list[%d] balanceAfter", i, i)
+                    .isEqualByComparingTo(balanceAfter(list.get(i)));
+            assertThat(amount.decimalValue().scale()).as("balance.updated[%d] availableAmount scale", i).isEqualTo(2);
+        }
     }
 
     private static BigDecimal balanceAfter(JsonNode tx) {

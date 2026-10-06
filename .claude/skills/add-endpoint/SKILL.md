@@ -124,8 +124,8 @@ Reference implementations:
     - every §3 row that applies to the endpoint;
     - the §3 rule 1 order of checks: validation, then existence, then each business rule in order;
     - a multi-field failure (rule 3);
-    - for writes, the §5 outbox rows, plus "a rejected request leaves no outbox row" for each
-      rejection status;
+    - for writes, the §5 events on the queue (through `BankingEvents.awaitEvents`), plus "a
+      rejected request publishes nothing" (after `fence()`) for each rejection status;
   - for a path ID:
     - malformed → 400 and unknown → 404, both with the endpoint's code;
     - malformed plus a bad body → 400 with the path code;
@@ -136,7 +136,7 @@ Reference implementations:
     - every response has an expected status, never a 5xx;
     - the exact success count;
     - the sums reconcile, and the list in `seq` order is a running balance;
-    - the 422s leave no outbox rows;
+    - the 422s publish no events (after `fence()`), and the published events match the 201s;
   - for a rule the spec defers to a later task: write the test now, annotated
     `@Disabled("task <n>: …")`, so the gap shows in every test report;
   - the task plan's Decisions (step 0).

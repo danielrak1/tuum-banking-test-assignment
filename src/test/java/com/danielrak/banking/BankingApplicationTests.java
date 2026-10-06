@@ -19,7 +19,7 @@ class BankingApplicationTests {
 
     @Test
     void contextLoadsAndSchemaIsMigrated() {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("1");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("2");
 
         List<String> tables = jdbc.queryForList(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'",

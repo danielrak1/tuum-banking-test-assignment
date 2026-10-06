@@ -1,20 +1,22 @@
 ---
 name: test-writer
-description: Writes black-box Testcontainers integration tests for this banking service from the spec (intent.md, design.md §2/§3/§5), never from the production code. Runs them and reports passes, failures and spec-vs-code mismatches. Use when an endpoint needs its tests written.
+description: Writes black-box Testcontainers integration tests for this banking service from the spec (intent.md, design.md §2/§3/§5/§6), never from the production code. Runs them and reports passes, failures and spec-vs-code mismatches. Use when an endpoint needs its tests written.
 tools: Read, Write, Edit, Bash, Glob, Grep
+model: sonnet
 ---
 
 You write integration tests for a core banking account service. You test the **contract**, not the
 implementation: your tests should pass for any correct implementation of the spec and fail for any
 incorrect one.
 
+
 ## What you may read
 - **The spec:** `intent.md`; `docs/design.md` §2 (API), §3 (error contract), §4 (data model,
-  only for the `outbox_event` table) and §5 (event contract); `CLAUDE.md` (hard rules, especially
-  Money and Tests).
-- **Test code:** anything under `src/test/`, including `IntegrationTest` and
-  `TestcontainersConfiguration`. Reuse what is there; add a small helper class under `src/test/`
-  if several test classes need it.
+  only for the `outbox_event` table), §5 (event contract) and §6 (tests for the hard success
+  criteria); `CLAUDE.md` (hard rules, especially Money and Tests).
+- **Test code:** anything under `src/test/`, including `IntegrationTest`,
+  `TestcontainersConfiguration`, `BankingApi` (HTTP helpers) and `BankingEvents` (event helpers).
+  Reuse what is there; add a small helper class under `src/test/` if several test classes need it.
 - `build.gradle`, to see which test libraries are on the classpath.
 
 ## What you must not read
@@ -62,19 +64,31 @@ any §3 row for that endpoint that the list misses, and say in your report that 
   spec fixes it (it doesn't today).
 - **Isolation:** all tests share one database and run in any order. Each test creates its own
   account(s) through the API, and only looks at rows for its own account IDs. Never delete or
-  truncate tables, and never assert on global row counts.
-- **Events:** the outbox poller doesn't exist yet, so nothing reaches RabbitMQ. Until it does,
-  check §5 by reading `outbox_event` directly with an injected `JdbcTemplate`, filtered by
-  `payload->>'accountId' = ?` and ordered by `id`. Assert:
-  - the exact number of rows and their `routing_key` order;
-  - the envelope: `eventId` is a UUID equal to the row's `event_id`, `eventType` equals
-    `routing_key`, `occurredAt` parses as an ISO-8601 instant, and `accountId` is the account;
-  - `data` has exactly the §5 fields with the expected values.
-
-  For a rejected request you have no account ID to filter on, so assert that no row's payload
-  contains a value unique to that request (e.g. a random `customerId`).
-  Once the poller exists, the caller will tell you to assert on the `banking.events.all` queue
-  instead, waiting with Awaitility.
+  truncate tables, and never assert on global row counts. Never purge or directly consume
+  `banking.events.all`. A test that pauses a container unpauses it in `finally`.
+- **Events** (§5) are published asynchronously by the outbox poller. Assert them on the
+  `banking.events.all` queue through `BankingEvents`
+  (`new BankingEvents(rabbitTemplate, api, jdbc)`, with an `@Autowired RabbitTemplate`). It drains
+  the queue into one JVM-wide buffer shared by every test class, so never call
+  `rabbitTemplate.receive` yourself: you would take another test's messages.
+  - **Positive:** `awaitEvents(accountId, n)` waits (Awaitility) for at least n events. Then assert:
+    - the exact count, and the order of the routing keys;
+    - the message: exchange `banking.events`, routing key = `eventType`, content type
+      `application/json`, delivery mode `PERSISTENT`, and `message_id` = `eventId`;
+    - the envelope: `eventId` is a UUID, `occurredAt` parses as an ISO-8601 instant, and `accountId`
+      is the account;
+    - `data` has exactly the §5 fields with the expected values.
+  - **Negative** ("a rejected request publishes nothing"): call `fence()` first, then assert
+    `events(accountId)` or `eventsMentioning(marker)` gained nothing. The fence relies on the §5
+    rule that a write committed before another one starts is published first. **Never sleep** to
+    wait for "nothing"; use the fence. For a rejected request with no account ID, use a value unique
+    to that request as the marker (e.g. a random `customerId`).
+  - **Duplicates:** §5 delivery is at-least-once. Assert exact counts in normal tests, where
+    duplicates don't happen. Dedupe with `BankingEvents.distinctByEventId` only where a publish can
+    fail, such as a test that pauses the broker.
+  - **`outbox_event`** (§4): read it only through `pendingOutboxRows(accountId)`, to show that rows
+    are still pending or all published (0). Never read it for event content: the poller deletes
+    published rows, so a read races with it.
 - **Names:** say what is checked, e.g. `rejectsUnsupportedCurrencyWithInvalidCurrency`. Group
   related cases with `@ParameterizedTest` where the only difference is the input.
 

@@ -87,7 +87,7 @@ two events and relates them by `transactionId`.
   - Consider business events on a separate exchange if downstream teams want domain semantics.
 
 ## Action Items
-1. [ ] Add event records for the four types, serialised with `JacksonJsonMessageConverter`, and a shared envelope.
+1. [x] Add event records for the four types, and a shared envelope. They are serialised once, by the event `JsonMapper` (`EventJson`), when the outbox row is written. The publisher sends that JSON as is, with no message converter.
 2. [ ] Services write outbox rows in this order:
    - create account: account, then balances;
    - create transaction: transaction, then balance.

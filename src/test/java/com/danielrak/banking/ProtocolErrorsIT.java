@@ -1,7 +1,10 @@
 package com.danielrak.banking;
 
+import static com.danielrak.banking.BankingEvents.assertEnvelope;
+import static com.danielrak.banking.BankingEvents.routingKeys;
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.danielrak.banking.BankingEvents.Event;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -13,6 +16,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -36,6 +40,9 @@ class ProtocolErrorsIT {
     @Autowired
     JdbcTemplate jdbc;
 
+    @Autowired
+    RabbitTemplate rabbitTemplate;
+
     @Test
     void rejectsUnknownRouteWith404NotFound() {
         String accountId = createAccount();
@@ -58,9 +65,8 @@ class ProtocolErrorsIT {
                 .exchange()
                 .returnResult(String.class);
         assertThat(get.getStatus().value()).isEqualTo(200);
-        assertThat(jdbc.queryForList(
-                "SELECT routing_key FROM outbox_event WHERE payload->>'accountId' = ? ORDER BY id",
-                String.class, accountId))
+        events.fence();
+        assertThat(routingKeys(events.events(accountId)))
                 .containsExactly("account.created", "balance.created");
     }
 
@@ -75,7 +81,7 @@ class ProtocolErrorsIT {
                 .exchange()
                 .returnResult(String.class);
         expectProblem(result, 415, "UNSUPPORTED_MEDIA_TYPE");
-        assertNoOutboxRowMentions(customerId);
+        assertNoEventMentions(customerId);
     }
 
     @Test
@@ -95,17 +101,19 @@ class ProtocolErrorsIT {
             """;
 
     BankingApi api;
+    BankingEvents events;
 
     @BeforeEach
     void setUp() {
-        api = new BankingApi(client, jdbc);
+        api = new BankingApi(client);
+        events = new BankingEvents(rabbitTemplate, api, jdbc);
     }
 
     @ParameterizedTest(name = "Accept: {0}")
     @ValueSource(strings = {"application/xml", "application/problem+json"})
     void rejectsUnacceptableAcceptOnPostTransactionWith406AndPostsNothing(String accept) {
         String accountId = accountWith100Eur();
-        long before = api.maxOutboxId(accountId);
+        int before = events.awaitEvents(accountId, 4).size();
 
         EntityExchangeResult<String> result = postTransaction(
                 accountId, MediaType.APPLICATION_JSON, MediaType.parseMediaType(accept), OUT_30);
@@ -118,7 +126,7 @@ class ProtocolErrorsIT {
     @ValueSource(strings = {"application/vnd.x+json", "application/problem+json", "text/plain"})
     void rejectsUnsupportedContentTypeOnPostTransactionWith415AndPostsNothing(String contentType) {
         String accountId = accountWith100Eur();
-        long before = api.maxOutboxId(accountId);
+        int before = events.awaitEvents(accountId, 4).size();
 
         EntityExchangeResult<String> result = postTransaction(
                 accountId, MediaType.parseMediaType(contentType), null, OUT_30);
@@ -133,7 +141,7 @@ class ProtocolErrorsIT {
         EntityExchangeResult<String> result = postAccount(
                 customerId, MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML);
         assertNotAcceptable(result, "POST /accounts, Accept: application/xml");
-        assertNoOutboxRowMentions(customerId);
+        assertNoEventMentions(customerId);
     }
 
     @Test
@@ -142,7 +150,7 @@ class ProtocolErrorsIT {
         EntityExchangeResult<String> result = postAccount(
                 customerId, MediaType.parseMediaType("application/vnd.x+json"), null);
         expectProblem(result, 415, "UNSUPPORTED_MEDIA_TYPE");
-        assertNoOutboxRowMentions(customerId);
+        assertNoEventMentions(customerId);
     }
 
     static Stream<Arguments> acceptableNegotiation() {
@@ -157,7 +165,7 @@ class ProtocolErrorsIT {
     @MethodSource("acceptableNegotiation")
     void postsTransactionWithAcceptableNegotiation(String label, MediaType contentType, MediaType accept) {
         String accountId = accountWith100Eur();
-        long before = api.maxOutboxId(accountId);
+        int before = events.awaitEvents(accountId, 4).size();
 
         EntityExchangeResult<String> result = postTransaction(accountId, contentType, accept, OUT_30);
 
@@ -169,8 +177,11 @@ class ProtocolErrorsIT {
         assertThat(balanceAfter.scale()).isEqualTo(2);
         assertThat(api.balance(accountId, "EUR")).isEqualByComparingTo(new BigDecimal("70.00"));
         assertThat(api.listTransactions(accountId)).hasSize(2);
-        assertThat(api.outboxRowsAfter(accountId, before)).extracting(r -> r.get("routing_key"))
-                .containsExactly("transaction.created", "balance.updated");
+        List<Event> published = events.awaitEvents(accountId, before + 2);
+        assertThat(published).as("events of %s", accountId).hasSize(before + 2);
+        List<Event> added = published.subList(before, before + 2);
+        assertThat(routingKeys(added)).containsExactly("transaction.created", "balance.updated");
+        added.forEach(e -> assertEnvelope(e, accountId));
     }
 
     @ParameterizedTest(name = "{0}")
@@ -184,10 +195,10 @@ class ProtocolErrorsIT {
         JsonNode body = JSON.readTree(result.getResponseBody());
         assertThat(body.get("customerId").asString()).isEqualTo(customerId);
         String accountId = body.get("accountId").asString();
-        assertThat(jdbc.queryForList(
-                "SELECT routing_key FROM outbox_event WHERE payload->>'accountId' = ? ORDER BY id",
-                String.class, accountId))
-                .containsExactly("account.created", "balance.created");
+        List<Event> published = events.awaitEvents(accountId, 2);
+        assertThat(published).as("events of %s", accountId).hasSize(2);
+        assertThat(routingKeys(published)).containsExactly("account.created", "balance.created");
+        published.forEach(e -> assertEnvelope(e, accountId));
     }
 
     /** An EUR account holding 100.00, opened by an IN. */
@@ -220,9 +231,10 @@ class ProtocolErrorsIT {
                 .returnResult(String.class);
     }
 
-    /** A rejected request left the balance, the transaction list and the outbox unchanged. */
-    private void assertTransactionNotPosted(String accountId, long outboxBefore) {
-        assertThat(api.outboxRowsAfter(accountId, outboxBefore)).as("no new outbox rows").isEmpty();
+    /** A rejected request left the balance and the transaction list unchanged, and published nothing. */
+    private void assertTransactionNotPosted(String accountId, int eventsBefore) {
+        events.fence();
+        assertThat(events.events(accountId)).as("no new events").hasSize(eventsBefore);
         assertThat(api.balance(accountId, "EUR")).isEqualByComparingTo(new BigDecimal("100.00"));
         List<JsonNode> list = api.listTransactions(accountId);
         assertThat(list).as("only the opening IN is listed").hasSize(1);
@@ -285,10 +297,9 @@ class ProtocolErrorsIT {
         return problem;
     }
 
-    private void assertNoOutboxRowMentions(String marker) {
-        Integer count = jdbc.queryForObject(
-                "SELECT count(*) FROM outbox_event WHERE payload::text LIKE ?",
-                Integer.class, "%" + marker + "%");
-        assertThat(count).isZero();
+    /** A rejected request published nothing: after the fence, no event mentions {@code marker}. */
+    private void assertNoEventMentions(String marker) {
+        events.fence();
+        assertThat(events.eventsMentioning(marker)).as("events mentioning %s", marker).isEmpty();
     }
 }

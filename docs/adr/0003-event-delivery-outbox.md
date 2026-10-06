@@ -30,10 +30,14 @@ Use a **transactional outbox**:
    They are retried on the next poll.
 
 **Guarantee: at-least-once.** A crash after the broker acks but before the `DELETE` commits
-re-publishes that row. Consumers dedupe on `eventId` (= AMQP `message_id`).
+re-publishes that row. Duplicates also follow any publish failure: a message whose confirm timed out
+may still have reached the queue, and rows sent after a nack or timeout in the same batch are sent
+again on the next poll. Consumers dedupe on `eventId` (= AMQP `message_id`).
 
 **Not used:** `mandatory`/publisher returns. The service declares a demo queue bound to `#`, so
-every message is routable.
+every message is routable. Without that queue, a message no queue is bound for would still be acked,
+then deleted and lost. So removing the demo queue (design.md §9) requires an alternate exchange with a
+catch-all queue, or `mandatory` plus returns treated as failures.
 
 ## Options Considered
 
@@ -112,6 +116,13 @@ a designed contract unless it is combined with an outbox anyway.
   - Consumers must be idempotent.
   - Tests must wait for asynchronous publication (Awaitility), not assert immediately.
   - Event throughput is capped by one poller; the README notes this under scaling.
+  - **A row that fails every time stalls publishing, by design: order over availability.** If the
+    broker nacks a row, or never confirms it, on every attempt, that row and every row after it in
+    `id` order stay pending. The poller keeps retrying with backoff, and logs WARN again every 60 s
+    and whenever the kind of failure changes. An operator has to step in: fix the broker side, or
+    remove or repair the row. Moving the row to a dead-letter queue would let later events for the
+    same balance overtake it, which breaks per-balance order. A DLQ that also parks every later row
+    of that balance is future work.
   - **Ordering is per balance (account + currency), not global.** `outbox_event.id` is assigned
     at insert, not at commit, so two transactions on different balances can commit in one order
     and publish in the other. Writers on the same balance serialise on its row lock and insert
@@ -125,9 +136,9 @@ a designed contract unless it is combined with an outbox anyway.
 ## Action Items
 1. [ ] Add the `outbox_event` table in `V1__init.sql` (`id bigserial`, `event_id uuid UNIQUE`, `routing_key`, `payload jsonb`, `created_at`).
 2. [ ] Add `OutboxWriter`, called by services in the business transaction.
-3. [ ] Add `OutboxPublisher`: `@Scheduled`, advisory xact lock, batch, correlated confirms, `DELETE` on ack.
-4. [ ] Declare the `banking.events` topic exchange and the `banking.events.all` demo queue bound to `#`.
-5. [ ] Tests:
+3. [x] Add `OutboxPublisher`: `@Scheduled`, advisory xact lock, batch, correlated confirms, `DELETE` on ack.
+4. [x] Declare the `banking.events` topic exchange and the `banking.events.all` demo queue bound to `#`.
+5. [x] Tests:
    - pause the broker, post a transaction (201, rows pending), unpause, assert the event arrives
      and the outbox is empty;
    - a rejected request leaves no outbox row.

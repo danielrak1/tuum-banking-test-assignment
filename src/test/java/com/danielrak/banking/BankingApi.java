@@ -5,11 +5,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Stream;
 import org.springframework.http.MediaType;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.client.EntityExchangeResult;
 import org.springframework.test.web.servlet.client.RestTestClient;
 import tools.jackson.databind.DeserializationFeature;
@@ -18,8 +16,9 @@ import tools.jackson.databind.cfg.JsonNodeFeature;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Black-box helpers shared by the transaction integration tests. Talks to the API only through
- * HTTP, and reads {@code outbox_event} (design.md §4) for the §5 event checks.
+ * Black-box HTTP helpers shared by the integration tests: create and read accounts, post and list
+ * transactions, and assert §3 problems. It talks to the API only through HTTP; the §5 event checks
+ * live in {@link BankingEvents}, which reads the {@code banking.events.all} queue.
  */
 final class BankingApi {
 
@@ -29,11 +28,9 @@ final class BankingApi {
             .build();
 
     private final RestTestClient client;
-    private final JdbcTemplate jdbc;
 
-    BankingApi(RestTestClient client, JdbcTemplate jdbc) {
+    BankingApi(RestTestClient client) {
         this.client = client;
-        this.jdbc = jdbc;
     }
 
     // ---------------------------------------------------------------- accounts
@@ -145,31 +142,6 @@ final class BankingApi {
                 .map(e -> e.path("field").asString() + "=" + e.path("code").asString())
                 .toList();
         assertThat(actual).as("errors[] of %s", problem).containsExactlyElementsOf(expected);
-    }
-
-    // ---------------------------------------------------------------- outbox (§4, §5)
-
-    /** Highest outbox id for the account so far (0 if none). */
-    long maxOutboxId(String accountId) {
-        Long max = jdbc.queryForObject(
-                "SELECT coalesce(max(id), 0) FROM outbox_event WHERE payload->>'accountId' = ?",
-                Long.class, accountId);
-        return max == null ? 0 : max;
-    }
-
-    /** The account's outbox rows with id greater than {@code afterId}, in id order. */
-    List<Map<String, Object>> outboxRowsAfter(String accountId, long afterId) {
-        return jdbc.queryForList("""
-                SELECT id, event_id::text AS event_id, routing_key, payload::text AS payload
-                FROM outbox_event WHERE payload->>'accountId' = ? AND id > ? ORDER BY id
-                """, accountId, afterId);
-    }
-
-    void assertNoOutboxRowMentions(String marker) {
-        Integer count = jdbc.queryForObject(
-                "SELECT count(*) FROM outbox_event WHERE payload::text LIKE ?",
-                Integer.class, "%" + marker + "%");
-        assertThat(count).as("outbox rows mentioning %s", marker).isZero();
     }
 
     static List<String> fieldNames(JsonNode node) {
