@@ -15,7 +15,7 @@ then commits it.
 | 0. Setup | ✅ Done | JDK 25 (Temurin), Docker Desktop, gh CLI, IntelliJ + Claude Code plugin |
 | 1. Plan | ✅ Done | `intent.md` |
 | 2. Design | ✅ Done | `docs/design.md`, `docs/adr/*.md` |
-| 3. Build | 🚧 In progress: tasks 1–5 of 7 done (skeleton PR #1, create/get account PR #2, transactions PR #3, events PR #4, errors PR #?) | code, `CLAUDE.md`, `.claude/skills/add-endpoint`, `.claude/agents/test-writer.md` |
+| 3. Build | 🚧 In progress: tasks 1–5 of 7 done (skeleton PR #1, create/get account PR #2, transactions PR #3, events PR #4, errors PR #5) | code, `CLAUDE.md`, `.claude/skills/add-endpoint`, `.claude/agents/test-writer.md` |
 | 4. Test | ⬜ | tests, JaCoCo gate, `docs/test-plan.md`, contract check, k6 load test |
 | 5. Deploy | ⬜ | hooks, PR review loop, `.github/workflows/ci.yml` |
 | 6. Maintain | ⬜ | `docs/retro.md`, final README |

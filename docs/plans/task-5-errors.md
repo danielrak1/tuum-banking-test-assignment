@@ -1,6 +1,6 @@
 # Task 5: Errors (`feat/errors`)
 
-> **Status:** done 2026-10-06 (PR #?). Built as planned; outcome at the end.
+> **Status:** done 2026-10-06 (PR #5). Built as planned; outcome at the end.
 
 ## Context
 This is Stage 3, task 5 of 7 in `docs/sdlc-plan.md`, item 6 ("errors") in the build order. Today every
