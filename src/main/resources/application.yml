@@ -11,6 +11,14 @@ spring:
     username: guest
     password: guest
     publisher-confirm-type: correlated   # ADR-0003
+    connection-timeout: 5s     # don't hang the outbox poller, and its open DB transaction, on a dead broker
+    channel-rpc-timeout: 5s    # default 10 min: a channel.open against a paused broker would block that long
+
+banking:
+  outbox:   # ADR-0003
+    poll-interval: 200ms
+    batch-size: 100
+    confirm-timeout: 5s   # per batch; unconfirmed rows stay pending and are retried
 
 mybatis:
   type-handlers-package: com.danielrak.banking.persistence
