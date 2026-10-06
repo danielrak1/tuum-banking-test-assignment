@@ -84,6 +84,45 @@ unpolished on purpose. Sorted by theme, with the task where each happened.
   20 s. Docker Desktop was likely worn down by the 1.1 M-event load runs. Restart Docker Desktop
   between heavy load runs and timing-sensitive checks, and don't read slow starts as a regression.
 
+## Hooks (Stage 5)
+Three gates in `.claude/settings.json`, scripts in `.claude/hooks/`. Each was triggered once on purpose
+(2026-10-06), seen blocking, then reverted.
+- **Gate 3, committed migration edit (PreToolUse, Edit|Write|MultiEdit).** An `Edit` that appended a
+  comment to `V2__outbox_payload_json.sql` was blocked before it touched the file: "Blocked:
+  src/main/resources/db/migration/V2__outbox_payload_json.sql is a committed Flyway migration…".
+  Pass case: `Write` and then `Edit` on a new `V3__hook_trigger_test.sql` both went through (file deleted
+  after). "Existing" means "in HEAD", so a new migration stays editable until it is committed.
+- **Gate 1, compile after a `.java` edit (PostToolUse).** An `Edit` that added
+  `int hookTriggerTest() { return "not an int"; }` to `Existence.java` came back with "error: incompatible
+  types: String cannot be converted to int" in 0.5 s. PostToolUse can't undo the edit; it makes the
+  breakage loud at once. The `Edit` that reverted it compiled silently.
+- **Gate 2, `./gradlew check` before `git commit` (PreToolUse, Bash).** A planted
+  `HookTriggerTest` with `fail(...)`, then `git commit --dry-run` (a dry run, so a gate that failed open
+  could not commit anything): blocked after 1 min 4 s with "205 tests completed, 1 failed". The first
+  message did not name the test, because `-q` hides test names; the hook now lists failing classes from
+  the JUnit XML. After deleting the test, the same dry run passed. Re-run after the review fixes: blocked
+  in 1 min 5 s, now with "Failing test classes: com.danielrak.banking.HookTriggerTest".
+- **Stale results could name the wrong test** (review finding). After a compile failure no new JUnit XML
+  is written, so the old files would be listed. The hook touches a marker before `check` and lists only
+  XML newer than it.
+- **The hooks fail closed without `jq`** (review finding). Each script exits 2 with "Blocked: jq
+  missing" before reading its input; before the fix, an empty input let everything through. Side
+  effect: without `jq`, every Bash call is blocked, not only commits.
+- **A wrong cost claim, caught by measuring.** The session reported that every commit, docs-only ones
+  included, would pay about 1 min of `check`. The reviewer doubted it: docs aren't task inputs. Measured
+  with `--console=plain`: all 6 tasks UP-TO-DATE, `check` in 409 ms, the whole hook in 1.0 s. A Bash call
+  that isn't a commit costs the hook 22 ms.
+- **A hook timeout fails open.** Claude Code treats a timed-out hook as a non-blocking error, so the
+  commit would go through unchecked. The script stops `check` itself at 300 s and blocks; the
+  settings.json timeout is 330 s. The 300 s comes from a measured `./gradlew check --rerun-tasks` of
+  67 s, with room for slow Docker starts (see "Environment flakiness").
+- **`pkill -P` leaves the Gradle daemon running after the deadline.**
+- **Known gap: Bash edits bypass the file gates.** `sed -i`, a heredoc, `mv` or `rm` on a migration or a
+  `.java` file never pass through gates 1 and 3. Gate 2 still catches a broken build at commit, but not
+  an edited migration whose tests still pass. Deferred to CI part 2: fail when a `V*.sql` is modified,
+  deleted or renamed compared with `origin/main`.
+- **The Stop hook (item 4) was skipped.**
+
 ## Skills
 - **The `add-endpoint` skill was revised after its first real use** (task 3): 14 gaps, including
   `Location` without a GET, 422 business exceptions, MyBatis `flushCache`, and test-writer not
