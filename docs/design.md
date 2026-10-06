@@ -46,12 +46,12 @@ an ADR in [`docs/adr/`](adr/):
 ### Stack (checked with context7, 2026-10-02)
 | Concern | Choice |
 |---|---|
-| Runtime | Java 25, Spring Boot **4.1.0** (supports Java 17–26), Gradle wrapper 9.x |
+| Runtime | Java 25, Spring Boot **4.1.1** (supports Java 17–26), Gradle wrapper 9.x |
 | Web | `spring-boot-starter-webmvc`, `spring-boot-starter-validation`, Jackson 3 (`tools.jackson`) |
 | Persistence | MyBatis Spring Boot Starter **4.x** (pin the patch at build time), `spring-boot-starter-flyway`, PostgreSQL |
 | Messaging | `spring-boot-starter-amqp` (Spring AMQP 4, correlated publisher confirms). No message converter: the outbox payload is already the JSON body, serialised by the event mapper (§5) |
 | API docs | springdoc-openapi **v3** (`springdoc-openapi-starter-webmvc-ui`), Swagger UI at `/swagger-ui.html` |
-| Tests | JUnit 5, `spring-boot-testcontainers` + `@ServiceConnection` (Postgres, RabbitMQ), JaCoCo gate ≥ 0.80 |
+| Tests | JUnit 5, `spring-boot-testcontainers` + `@ServiceConnection` (Postgres, RabbitMQ), JaCoCo gate: lines and branches ≥ 0.80 |
 
 ## 2. API
 
@@ -241,11 +241,11 @@ CREATE TABLE outbox_event (
 | Property | Value |
 |---|---|
 | Exchange | `banking.events`, topic, durable. Declared by the service. |
-| Messages | Published to `banking.events` with routing key = `eventType`. JSON body (UTF-8), persistent, `content_type=application/json`, `message_id = eventId` |
+| Messages | Published to `banking.events` with routing key = `eventType`. JSON body (UTF-8), persistent, `content_type=application/json`, `content_encoding=UTF-8`, `message_id = eventId` |
 | Demo queue | `banking.events.all`, durable, bound to `#`, so events are visible in the RabbitMQ UI (localhost:15672). It is capped at 10,000 messages with `x-overflow=drop-head`: nothing consumes it under compose, so when it is full the oldest events are dropped. Real consumers declare and own their own queues. |
-| Delivery | At-least-once. Duplicates can follow **any** publish failure, not only a crash: a message whose confirm timed out may still have reached the queue, and messages sent after a nack or timeout in the same batch are sent again on the next poll. Consumers must dedupe on `eventId`. |
-| Ordering | Ordered per balance (account + currency), by outbox `id`. Also, a write that commits before another one starts is published first, because one publisher at a time sends rows in `id` order. Concurrent writes on different balances have no defined order: see ADR-0003. |
-| Latency | Asynchronous: an event is published up to one poll interval (~200 ms) after commit, or later while the broker is down. |
+| Delivery | At-least-once. Duplicates can follow **any** publish failure, not only a crash: a message whose confirm timed out, or that was nacked, may still have reached a queue, and it is sent again on the next poll. Consumers must dedupe on `eventId`. |
+| Ordering | Ordered per balance (account + currency), by outbox `id`. Also, a write that commits before another one starts is published first, because one publisher at a time sends rows in `id` order. The order holds through failures, because a row is sent only after every earlier row is confirmed. Concurrent writes on different balances have no defined order: see ADR-0003. |
+| Latency | Asynchronous: an event is published up to one poll interval (~200 ms) after commit. While publishing fails, the poller backs off, doubling from 200 ms up to 5 s. |
 
 The event body is written by its own `JsonMapper`, separate from the HTTP one, so a `spring.jackson.*`
 setting can't change this contract. Instants are ISO-8601 strings, amounts are plain JSON numbers with
@@ -298,9 +298,12 @@ The full test plan is Stage 4 (`docs/test-plan.md`). The design commits to these
 
 - **Balance overflow:** a balance pushed past `NUMERIC(19,2)` by `IN`s fails as a 500
   `INTERNAL_ERROR` (rolled back, logged at ERROR). An amount is capped at 17 integer digits, but two
-  requests are enough: `IN 99999999999999999.99`, then `IN 0.01` on the same balance. A 422 for this
-  is planned but not scheduled yet (`docs/sdlc-plan.md`, build item 6).
+  requests are enough: `IN 99999999999999999.99`, then `IN 0.01` on the same balance. Deferred: no money
+  or event leaks, only the status is wrong. A 422 is a Stage 4 carry-over in `docs/sdlc-plan.md`.
 - **No outbox latency tuning:** events are published up to one poll interval (~200 ms) after commit.
+- **Publish throughput:** the poller waits for each confirm before sending the next row, which keeps
+  per-balance order through a nack (ADR-0003). One publisher therefore sends at most one event per
+  broker round trip. The Stage 4 k6 run shows whether this matters.
 - **Docker image build skips tests:** the Dockerfile builds with `bootJar`, which runs no tests, because
   Testcontainers can't run inside `docker build`. Tests and the coverage gate belong to
   `./gradlew check` (locally and in CI).
@@ -312,6 +315,8 @@ The full test plan is Stage 4 (`docs/test-plan.md`). The design commits to these
 - **Idempotency keys** on POST, so a retried request can't post twice.
 - **Pagination** on GET transactions.
 - **`schemaVersion` in the envelope**, once a second consumer exists.
+- **A version field in `balance.updated`** (e.g. a per-balance sequence number), so a consumer can
+  discard a stale state on its own instead of relying on delivery order. For the README's future work.
 - **Demo queue:** the 10,000-message, drop-head cap is a stopgap. Alternatives:
   - a RabbitMQ **stream** (`x-queue-type=stream`) with size or age retention, so history can be
     replayed rather than dropped;

@@ -43,7 +43,7 @@ front-end / UI.
 - A transaction and its balance change succeed or fail together.
 - Integration tests run against real Postgres and RabbitMQ, with ≥ 80% coverage
   enforced by the build.
-- A fresh clone runs with `docker compose up`: no configuration changes and no
+- A fresh clone runs with `docker compose up --build`: no configuration changes and no
   local Java or Gradle needed. The code is hosted on GitHub.
 
 ## Success criteria

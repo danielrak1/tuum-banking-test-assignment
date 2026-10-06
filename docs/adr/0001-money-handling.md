@@ -93,10 +93,10 @@ and breaks for JPY (0) or KWD (3); the JSON contract either exposes minor units 
   handled gracefully; it's unrealistic at 17 integer digits.
 
 ## Action Items
-1. [ ] DTO validation: `@ValidAmount BigDecimal amount`, a custom validator (see Decision).
-2. [ ] Map Jackson parse errors on `amount` to 400 `INVALID_AMOUNT`.
-3. [ ] Tests:
+1. [x] DTO validation: `@ValidAmount BigDecimal amount`, a custom validator (see Decision).
+2. [x] Map Jackson parse errors on `amount` to 400 `INVALID_AMOUNT`.
+3. [x] Tests:
    - zero, negative, `10.555`, `1e18`, `"abc"` and a missing amount all give 400 `INVALID_AMOUNT`;
    - `10.500` is accepted;
    - the response amount has scale 2.
-4. [ ] Add the money rules to `CLAUDE.md`.
+4. [x] Add the money rules to `CLAUDE.md`.

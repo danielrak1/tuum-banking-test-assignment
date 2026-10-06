@@ -88,8 +88,8 @@ two events and relates them by `transactionId`.
 
 ## Action Items
 1. [x] Add event records for the four types, and a shared envelope. They are serialised once, by the event `JsonMapper` (`EventJson`), when the outbox row is written. The publisher sends that JSON as is, with no message converter.
-2. [ ] Services write outbox rows in this order:
+2. [x] Services write outbox rows in this order:
    - create account: account, then balances;
    - create transaction: transaction, then balance.
-3. [ ] Integration tests consume `banking.events.all` and assert the exact event types, order and
+3. [x] Integration tests consume `banking.events.all` and assert the exact event types, order and
    payloads for each operation.

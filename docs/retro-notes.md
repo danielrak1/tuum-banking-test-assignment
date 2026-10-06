@@ -23,6 +23,17 @@ unpolished on purpose. Sorted by theme, with the task where each happened.
   the black-box rule were missing). Plan mode caught both.
 
 ## Reviews
+- **A domain-specific reviewer found a bug three general reviews missed** (post-build audit). The
+  outbox poller sent a whole batch before waiting for confirms, so a row after a nacked one could be
+  acked and enqueued first. That broke per-balance order, and it turned a "stalled" poison row into a
+  flood of duplicates. The task 4 plan review, `/code-review` and silent-failure-hunter all missed it;
+  `banking-reviewer` found it on its first run, checking against ADR-0003's ordering rule. The fix
+  waits for each confirm. A test forces a real nack (a `reject-publish` queue with max length 0) and
+  fails against the old code. Running that test also showed that a nacked message can still reach
+  the queues that accepted it.
+- **spec-checker's one false positive came from stale context**: it reported CLAUDE.md as out of
+  date because it trusted the copy in its session context over the file on disk. Its definition now
+  says to read every file from disk.
 - **Independent reviewers agreeing raised confidence** (task 2: `/code-review` and
   silent-failure-hunter both found B, D and E).
 - **The broad review found the worst bug** (task 3, finding A: a 406 *after* commit meant a client
