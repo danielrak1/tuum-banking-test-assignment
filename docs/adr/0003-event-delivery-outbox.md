@@ -35,7 +35,9 @@ may still have reached the queue, and rows sent after a nack or timeout in the s
 again on the next poll. Consumers dedupe on `eventId` (= AMQP `message_id`).
 
 **Not used:** `mandatory`/publisher returns. The service declares a demo queue bound to `#`, so
-every message is routable.
+every message is routable. Without that queue, a message no queue is bound for would still be acked,
+then deleted and lost. So removing the demo queue (design.md §9) requires an alternate exchange with a
+catch-all queue, or `mandatory` plus returns treated as failures.
 
 ## Options Considered
 
@@ -114,6 +116,13 @@ a designed contract unless it is combined with an outbox anyway.
   - Consumers must be idempotent.
   - Tests must wait for asynchronous publication (Awaitility), not assert immediately.
   - Event throughput is capped by one poller; the README notes this under scaling.
+  - **A row that fails every time stalls publishing, by design: order over availability.** If the
+    broker nacks a row, or never confirms it, on every attempt, that row and every row after it in
+    `id` order stay pending. The poller keeps retrying with backoff, and logs WARN again every 60 s
+    and whenever the kind of failure changes. An operator has to step in: fix the broker side, or
+    remove or repair the row. Moving the row to a dead-letter queue would let later events for the
+    same balance overtake it, which breaks per-balance order. A DLQ that also parks every later row
+    of that balance is future work.
   - **Ordering is per balance (account + currency), not global.** `outbox_event.id` is assigned
     at insert, not at commit, so two transactions on different balances can commit in one order
     and publish in the other. Writers on the same balance serialise on its row lock and insert

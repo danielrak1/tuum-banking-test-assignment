@@ -303,7 +303,12 @@ The full test plan is Stage 4 (`docs/test-plan.md`). The design commits to these
   - no demo queue outside dev, where only real consumers' own queues exist.
 
   Either one means deleting the existing queue, because RabbitMQ won't change a declared queue's
-  arguments.
+  arguments. Without a `#`-bound queue, the broker acks an unroutable event and the poller deletes
+  it, so the event is lost. Removing the demo queue therefore also needs an alternate exchange with
+  a catch-all queue, or `mandatory` plus returns treated as failures (ADR-0003).
+- **Poison rows:** a row that is nacked, or never confirmed, on every attempt stalls publishing for
+  every row after it. That is deliberate: order over availability. It needs an operator (ADR-0003).
+  A dead-letter queue that keeps per-balance order is future work.
 - **Outbox:** batch deletes or partitioning at high volume; `LISTEN/NOTIFY` to cut publish latency.
 - **Hot accounts:** a single balance row serialises its writers. At very high TPS on one account,
   consider sharded sub-balances.

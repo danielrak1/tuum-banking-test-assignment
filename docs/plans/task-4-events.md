@@ -1,7 +1,7 @@
 # Task 4: Events (`feat/events`)
 
-> **Status:** done 2026-10-06. Part 1 (publisher) and Part 2 (queue-based tests, criterion 4, docs)
-> are built and green; outcomes are below.
+> **Status:** done 2026-10-06 (PR #4). Part 1 (publisher), Part 2 (queue-based tests, criterion 4,
+> docs), the broker backoff and the final review round are built and green; outcomes are below.
 
 ## Part 1 outcome
 - **Built:** steps 1–4, `EventJsonTest` (2 golden cases) and `OutboxPublisherIT`.
@@ -268,3 +268,69 @@ New `BankingEvents` helper (`BankingApi` stays HTTP-only):
   - The **repeat-failure DEBUG** log.
   - The **`ExecutionException` and interrupt** catches.
 
+
+## Manual check and broker backoff (after PR #4 opened)
+- **Manual check** (coach session, full run against compose): all pass.
+  - The topology exists, and events arrive with the right properties.
+  - A 422 publishes no event.
+  - With the broker stopped, POSTs return 201 and the rows stay pending. With the broker started,
+    the backlog drained in 4 s: 11/11 events, in order, no duplicates.
+  - A 406 leaves the balance unchanged.
+- **Finding:** with RabbitMQ stopped, `CachingConnectionFactory` logged "Attempting to connect" about
+  5 times a second (48 lines in 10 s). Every poll also opened a DB transaction and took the advisory
+  lock before failing.
+- **Fix:** after a "broker unavailable" failure (an `AmqpException`), `OutboxPublisher` backs off
+  exponentially: 200 ms doubling to a 5 s cap, reset on success. The check runs before the transaction
+  opens. The wait is checked once per poll, so it rounds up to the next poll. At first only broker errors
+  backed off. The final review round extended it to every failed poll.
+  - **The policy** is a small class, `Backoff`, unit-tested in `BackoffTest`: doubling, the cap, the
+    reset, and `nanoTime` wrap-around.
+  - **The wiring** (an `AmqpException` triggers the backoff) has no automated test. Making the broker
+    unreachable in a test means stopping the shared container, which gives it a new mapped port.
+    CLAUDE.md also rules out mocked brokers.
+  - **Checked by hand against compose** (`docker compose stop rabbitmq`): 8 connection attempts in
+    about 17 s, at 0.2, 0.4, 0.8, 1.6, 3.3, 5.1 and 5.1 s intervals, with one WARN. After
+    `docker compose start rabbitmq` the rows drained within 8 s (broker boot plus at most one 5 s
+    wait), followed by one recovery INFO.
+- `./gradlew cleanTest check`: 170 tests, 5 skipped, 0 failed.
+
+## Final review round (`/code-review` medium + silent-failure-hunter on `OutboxPublisher`)
+Scope: the 8 `src/main` files of the task, excluding `src/test` and docs. Neither review found a row
+deleted without an ack.
+
+**Fixed:**
+- **One failure path.** `publish` returns a `Failure(kind, reason, cause)`.
+  - Every kind gets the same treatment: a broker error (`AmqpException`, labelled with its class), a
+    nack (with a reason, or "no reason given"), a confirm timeout, a failed or cancelled confirm
+    future, and any other `RuntimeException`, such as a DB outage.
+  - The batch's acked prefix is still deleted and committed. Then, in `poll()` after the commit, the
+    failure is logged and the next poll backs off.
+  - A poll that ends with no failure resets the backoff and logs the recovery. "No failure" includes
+    an empty batch and losing the lock.
+  - Each item comes from a review finding:
+    - SF-3: nacks and timeouts back off too.
+    - SF-4 / CR-1: a stale backoff or `failing` state can't survive on a standby instance.
+    - SF-5: "recovered" is logged only after the commit, DB errors back off instead of logging ERROR
+      every 200 ms, and `CancellationException` is treated as a normal failure.
+- **WARN rules** (SF-1, high), in `FailureLog` and unit-tested in `FailureLogTest` with a passed-in
+  clock: WARN when a failure starts, when its kind changes (e.g. `amqp` → `nack:<eventId>`), and every
+  60 s while it lasts; DEBUG otherwise. The WARN includes how long publishing has been failing and
+  the next wait.
+- **Shutdown interrupts** log at DEBUG, without a failure or backoff (SF-6).
+- **SF-2, docs only:** an unroutable event is acked and lost. The `#`-bound demo queue prevents that
+  today. ADR-0003 and design.md §9 now say that removing it needs an alternate exchange, or
+  `mandatory` plus returns treated as failures.
+
+**Decision (SF-1):** a row that fails every time stalls publishing by design, putting order over
+availability. An operator has to step in. A dead-letter queue would let later events for that balance
+overtake the row, breaking per-balance order, so a DLQ is future work. This is recorded in ADR-0003's
+consequences and design.md §9.
+
+**Checks:**
+- Stopped broker, against compose, rerun after the rework: one WARN
+  (`broker error (AmqpConnectException)`), connection attempts backing off 0.2 → 5 s, and
+  "recovered after 16 s" once the broker was back.
+- `OutboxPublisherIT`'s 3 s pause logs one timeout WARN, then "recovered".
+
+**Closing rule:** this was the last review round for task 4. A further finding reopens the task only
+if it is high severity.
