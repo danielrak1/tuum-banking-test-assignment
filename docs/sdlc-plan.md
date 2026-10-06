@@ -17,7 +17,7 @@ then commits it.
 | 2. Design | ✅ Done | `docs/design.md`, `docs/adr/*.md` |
 | 3. Build | ✅ Done: tasks 1–6 cover all 7 build items (skeleton + schema PR #1, create/get account PR #2, transactions PR #3, events PR #4, errors PR #5, docker PR #6) | code, `CLAUDE.md`, `.claude/skills/add-endpoint`, `.claude/agents/test-writer.md`, `banking-reviewer.md`, `spec-checker.md` |
 | 4. Test | ✅ Part A (safety net, PR #8): `docs/test-plan.md`, `scripts/contract-check.sh`, `verify` skill. Part B (throughput): `scripts/load-test.sh`, `docs/performance.md`, the existence fold. Balance overflow stays deferred | `docs/test-plan.md`, contract check, `verify`, k6 load test |
-| 5. Deploy | 🟡 Hooks 1–3 (`.claude/settings.json`, `.claude/hooks/`), each seen blocking. PR review loop and CI to do | hooks, PR review loop, `.github/workflows/ci.yml` |
+| 5. Deploy | 🟡 Hooks 1–3 (`.claude/settings.json`, `.claude/hooks/`), each seen blocking. CI (PR #11): `verify.sh` plus a migration guard, seen failing. PR review loop and deploy-checklist to do | hooks, PR review loop, `.github/workflows/ci.yml` |
 | 6. Maintain | ⬜ | `docs/retro.md`, final README |
 
 ## Environment
@@ -148,11 +148,12 @@ then commits it.
   - ✅ Trigger each gate once on purpose to see it work (`docs/retro-notes.md`, "Hooks").
   - Known gap: the file gates (1 and 3) see only Claude's Edit/Write/MultiEdit tools. A Bash edit
     (`sed -i`, a heredoc, `mv`, `rm`) passes both unchecked; gate 2 still catches a broken build at commit.
-    CI part 2 closes it for migrations.
+    ✅ CI part 2 closes it for migrations (PR #11).
 - **PR loop:** feature branch → `/commit-push-pr`, then review with `/code-review`, `pr-review-toolkit`, `banking-reviewer`, `spec-checker` and `/security-review`, then fix and merge.
-- **CI:** GitHub Actions with JDK 25: `./gradlew check`, the JaCoCo report, `docker build`, and a compose smoke test plus the contract check. Finish with an `engineering:deploy-checklist` pass.
-  - Part 2: fail when a `V*.sql` is modified, deleted or renamed compared with `origin/main` (closes the
-    hooks' Bash-edit gap for migrations).
+- ✅ **CI** (`.github/workflows/ci.yml`, PR #11; `engineering:deploy-checklist` pass still to do): GitHub Actions with JDK 25: `./gradlew check`, the JaCoCo report, `docker build`, and a compose smoke test plus the contract check. Finish with an `engineering:deploy-checklist` pass.
+  - ✅ Part 2: fail when a `V*.sql` is modified, deleted or renamed compared with `origin/main` (closes the
+    hooks' Bash-edit gap for migrations). Job `migration-guard`; seen red on a V1 edit (run 37522190374),
+    then reverted.
 
 ## Stage 6: Maintain
 - Run `session-report` / `explain-usage` to see where the effort went.

@@ -123,6 +123,14 @@ Three gates in `.claude/settings.json`, scripts in `.claude/hooks/`. Each was tr
   deleted or renamed compared with `origin/main`.
 - **The Stop hook (item 4) was skipped.**
 
+## CI (Stage 5)
+`.github/workflows/ci.yml` (PR #11): `verify.sh` on Temurin 25, plus a `migration-guard` job on PRs.
+- **`verify` stayed green with V1 edited**: every test and the compose stack start from an empty DB, so Flyway never compares a checksum. Only the guard caught it (run 37522190374).
+- **setup-gradle's cache is read-only off `main`**: both PR runs logged "Gradle User Home cache not found" and saved nothing; the cache fills on the first push to `main`.
+- **`check` takes about 2.6× longer on the runner**: 174 s and 179 s, against about 67 s locally.
+- **`compose up --build` took 87 s every run**: the Dockerfile's BuildKit cache mount doesn't persist between runners.
+- **`gh run list --commit` needs the full SHA**: a short SHA matched nothing, without an error, so a wait loop polled forever.
+
 ## Skills
 - **The `add-endpoint` skill was revised after its first real use** (task 3): 14 gaps, including
   `Location` without a GET, 422 business exceptions, MyBatis `flushCache`, and test-writer not
