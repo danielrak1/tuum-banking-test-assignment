@@ -15,7 +15,7 @@ then commits it.
 | 0. Setup | ✅ Done | JDK 25 (Temurin), Docker Desktop, gh CLI, IntelliJ + Claude Code plugin |
 | 1. Plan | ✅ Done | `intent.md` |
 | 2. Design | ✅ Done | `docs/design.md`, `docs/adr/*.md` |
-| 3. Build | 🚧 In progress: tasks 1–2 of 7 done (skeleton PR #1, create/get account PR #2) | code, `CLAUDE.md`, `.claude/skills/add-endpoint`, `.claude/agents/test-writer.md` |
+| 3. Build | 🚧 In progress: tasks 1–3 of 7 done (skeleton PR #1, create/get account PR #2, transactions PR #3) | code, `CLAUDE.md`, `.claude/skills/add-endpoint`, `.claude/agents/test-writer.md` |
 | 4. Test | ⬜ | tests, JaCoCo gate, `docs/test-plan.md`, contract check, k6 load test |
 | 5. Deploy | ⬜ | hooks, PR review loop, `.github/workflows/ci.yml` |
 | 6. Maintain | ⬜ | `docs/retro.md`, final README |
@@ -84,14 +84,31 @@ then commits it.
   4. transactions
   5. events. Also: give the outbox its own explicitly configured `JsonMapper`, so a
      `spring.jackson.*` change to the HTTP mapper can't silently change the §5 event format
-     (task 2 review, finding H).
+     (task 2 review, finding H). Also: the tests that read `outbox_event` directly
+     (`AccountApiIT`, `TransactionApiIT`, `BalanceConcurrencyIT`) will race with the poller once
+     it deletes published rows. Move their event checks to the `banking.events.all` queue,
+     waiting with Awaitility (task 3 test-writer finding).
   6. errors. Includes design.md §3 rule 4: map Jackson parse errors by field path to that field's
      code (e.g. `"amount": "abc"` → `INVALID_AMOUNT`), with a one-entry `errors[]`. Until then every
-     parse error is `VALIDATION_FAILED` (task 2 review, finding F).
+     parse error is `VALIDATION_FAILED` (task 2 review, finding F). Also reject a JSON string
+     amount (`"10.50"`) with `INVALID_AMOUNT`: Jackson coerces it and accepts it today. Then remove
+     `@Disabled` from the two task-6 tests in `TransactionApiIT` (task 3, decision 2).
+     From the task 3 review (each has a `@Disabled("task 6: …")` test in `TransactionApiIT`, unless noted):
+     - reject duplicate JSON keys (`StreamReadFeature.STRICT_DUPLICATE_DETECTION`). Today the last one
+       wins, so `"amount": 1.00, …, "amount": 5000.00` posts 5000.00;
+     - reject scalar coercion into string fields (a `CoercionConfig` for textual targets). Today
+       `"description": 42` or `"customerId": 12345` is stored as a string;
+     - a 422 instead of a 500 for an `IN` that would overflow `NUMERIC(19,2)` (design.md §8; no test yet,
+       because the code is still to be decided).
   7. multi-stage Dockerfile, and docker-compose with healthchecks. RabbitMQ's `guest` user only
      works from loopback, so the app container can't use it: set `RABBITMQ_DEFAULT_USER`/`RABBITMQ_DEFAULT_PASS`
      on the broker, and give the app env overrides (`SPRING_DATASOURCE_URL`, `SPRING_RABBITMQ_HOST`,
      `SPRING_RABBITMQ_USERNAME`, `SPRING_RABBITMQ_PASSWORD`) pointing at the compose services.
+     Also, springdoc (task 3 review): Swagger UI is how reviewers explore the API (intent.md), but
+     the OpenAPI schema doesn't show the validator-based rules. Add
+     `@Schema(requiredMode = REQUIRED, allowableValues = …)` on the request records, so `amount`,
+     `currency` and `direction` show as required with their enums. Also set explicit
+     `@Operation(operationId = …)`: today the two `create` methods collide as `create_1`.
 
 ## Stage 4: Test (deep)
 - Write `docs/test-plan.md` with `engineering:testing-strategy`. Every API error in the PDF maps to a test.
@@ -107,6 +124,14 @@ then commits it.
   - a test proving **events are never lost**
 - **Contract check** (`scripts/contract-check.sh`): runs every request and error case from the PDF against the running compose stack. This is our version of the playbook's "continuous evals".
 - **Throughput:** a k6 script, run through its Docker image, measures TPS and p95 latency. Results go in the README.
+- **Carried over from the task 3 review:**
+  - `@Size` counts UTF-16 code units, while design.md says characters and Postgres counts code
+    points. 128 emoji are rejected as more than 255. This only over-rejects. Decide whether to count
+    code points.
+  - Move `AccountApiIT` and `ProtocolErrorsIT` onto the shared `BankingApi` test helper. Their
+    private copies (`JSON`, `expectProblem`, `errors`, …) have already drifted.
+  - Throughput: fold `TransactionService.create`'s two existence checks (account, balance) into one
+    `SELECT EXISTS …, EXISTS …`, and use `AccountMapper.exists` instead of mapping the whole account row.
 - Write the **`verify` skill**, which chains all of the above.
 
 ## Stage 5: Deploy

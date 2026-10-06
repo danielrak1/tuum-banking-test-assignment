@@ -3,6 +3,8 @@
 **Status:** Accepted
 **Date:** 2026-10-02
 **Deciders:** Daniel Rak
+**Amended:** 2026-10-05 (task 3): validation is a custom `@ValidAmount`. The original text said
+`@Digits` strips trailing zeros; for a `BigDecimal` it doesn't.
 
 ## Context
 - The service stores balances and transaction amounts in EUR, SEK, GBP and USD.
@@ -17,12 +19,17 @@
 - **PostgreSQL:** `NUMERIC(19,2)`. The maximum is 17 integer digits plus 2 decimals.
 - **JSON:** a number (`10.50`). Jackson reads it straight into `BigDecimal` and writes it back
   without passing through `double`.
-- **Validation:** `@Positive @Digits(integer = 17, fraction = 2)`.
+- **Validation:** a custom `@ValidAmount` constraint. It strips trailing zeros, then requires
+  the amount to be > 0, with at most 2 decimals (`max(0, scale)`) and at most 17 integer digits
+  (`precision − scale`).
   - Zero is rejected.
   - More than 2 decimals is rejected. The API never rounds.
   - Anything outside `NUMERIC(19,2)` is rejected.
   - All of these return 400 `INVALID_AMOUNT`.
-  - `10.500` is accepted as 10.50, because the validator strips trailing zeros first.
+  - Trailing zeros don't count: `10.500` is accepted as 10.50, and `1e2` as 100.00. Dropping a
+    trailing zero doesn't change the value, so this isn't rounding.
+  - Hibernate's `@Digits` can't do this. It counts a `BigDecimal`'s digits as written, and strips
+    trailing zeros only from other `Number` types, so it would reject `10.500`.
 - **Code rules** (these go into `CLAUDE.md`):
   - Compare amounts with `compareTo`, never `equals` (`10.0` is not `equals` `10.00`).
   - Never use `new BigDecimal(double)` or `BigDecimal.valueOf(double)` on amounts.
@@ -86,7 +93,7 @@ and breaks for JPY (0) or KWD (3); the JSON contract either exposes minor units 
   handled gracefully; it's unrealistic at 17 integer digits.
 
 ## Action Items
-1. [ ] DTO validation: `@NotNull @Positive @Digits(integer = 17, fraction = 2) BigDecimal amount`.
+1. [ ] DTO validation: `@ValidAmount BigDecimal amount`, a custom validator (see Decision).
 2. [ ] Map Jackson parse errors on `amount` to 400 `INVALID_AMOUNT`.
 3. [ ] Tests:
    - zero, negative, `10.555`, `1e18`, `"abc"` and a missing amount all give 400 `INVALID_AMOUNT`;

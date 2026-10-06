@@ -12,6 +12,7 @@ import jakarta.validation.Valid;
 import java.net.URI;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -32,7 +33,7 @@ public class AccountController {
         this.accountService = accountService;
     }
 
-    @PostMapping
+    @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     @Operation(summary = "Create an account with a zero balance in each currency")
     @ApiResponse(responseCode = "201", description = "Account created; Location points to it")
     @ApiResponse(responseCode = "400",
@@ -46,7 +47,7 @@ public class AccountController {
                 .body(AccountResponse.from(account));
     }
 
-    @GetMapping("/{accountId}")
+    @GetMapping(path = "/{accountId}", produces = MediaType.APPLICATION_JSON_VALUE)
     @NotFoundCode(ErrorCode.ACCOUNT_NOT_FOUND)
     @Operation(summary = "Get an account with its balances")
     @ApiResponse(responseCode = "200", description = "The account, balances in currency order")

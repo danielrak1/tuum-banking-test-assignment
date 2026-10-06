@@ -17,3 +17,4 @@ mybatis:
   configuration:
     map-underscore-to-camel-case: true
     arg-name-based-constructor-auto-mapping: true   # map rows into records by constructor argument name
+    local-cache-scope: statement   # no session cache: an UPDATE … RETURNING @Select always runs

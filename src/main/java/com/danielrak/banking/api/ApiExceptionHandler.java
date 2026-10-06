@@ -1,8 +1,12 @@
 package com.danielrak.banking.api;
 
 import com.danielrak.banking.domain.AccountNotFoundException;
+import com.danielrak.banking.domain.CurrencyNotOpenException;
+import com.danielrak.banking.domain.InsufficientFundsException;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +37,13 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
 public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
+
+    /** Field-specific codes by constraint (design.md §3); any other constraint gives {@code VALIDATION_FAILED}. */
+    private static final Map<String, ErrorCode> FIELD_CODES = Map.of(
+            SupportedCurrency.class.getSimpleName(), ErrorCode.INVALID_CURRENCY,
+            SupportedDirection.class.getSimpleName(), ErrorCode.INVALID_DIRECTION,
+            ValidAmount.class.getSimpleName(), ErrorCode.INVALID_AMOUNT,
+            DescriptionPresent.class.getSimpleName(), ErrorCode.DESCRIPTION_MISSING);
 
     /** One entry of {@code errors[]}. */
     record FieldProblem(String field, ErrorCode code, String message) {
@@ -92,6 +103,17 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, body, new HttpHeaders(), HttpStatus.NOT_FOUND, request);
     }
 
+    /** A supported currency the account holds no balance in: the request is well formed, the account rejects it. */
+    @ExceptionHandler(CurrencyNotOpenException.class)
+    ResponseEntity<Object> handleCurrencyNotOpen(CurrencyNotOpenException ex, WebRequest request) {
+        return unprocessable(ex, ErrorCode.INVALID_CURRENCY, request);
+    }
+
+    @ExceptionHandler(InsufficientFundsException.class)
+    ResponseEntity<Object> handleInsufficientFunds(InsufficientFundsException ex, WebRequest request) {
+        return unprocessable(ex, ErrorCode.INSUFFICIENT_FUNDS, request);
+    }
+
     /** Anything unexpected: the full exception goes to the ERROR log, the client gets a generic 500. */
     @ExceptionHandler(Exception.class)
     ResponseEntity<Object> handleUnexpected(Exception ex, WebRequest request) {
@@ -108,6 +130,12 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             problem.setProperty("code", protocolCode(statusCode).name());
         }
         return super.createResponseEntity(body, headers, statusCode, request);
+    }
+
+    /** 422: well formed, but the account's state rejects it (design.md §3 rule 2). */
+    private ResponseEntity<Object> unprocessable(RuntimeException ex, ErrorCode code, WebRequest request) {
+        ProblemDetail body = problem(HttpStatus.UNPROCESSABLE_CONTENT, ex.getMessage(), code);
+        return handleExceptionInternal(ex, body, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
     }
 
     private ResponseEntity<Object> internalError(Exception ex, WebRequest request) {
@@ -128,11 +156,9 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         };
     }
 
-    /** {@code @SupportedCurrency} gives {@code INVALID_CURRENCY}; any other constraint gives {@code VALIDATION_FAILED}. */
+    /** A field's code comes from its constraint; {@code getCode()} is the constraint's simple name. */
     private static ErrorCode codeFor(ObjectError error) {
-        return SupportedCurrency.class.getSimpleName().equals(error.getCode())
-                ? ErrorCode.INVALID_CURRENCY
-                : ErrorCode.VALIDATION_FAILED;
+        return FIELD_CODES.getOrDefault(Objects.requireNonNullElse(error.getCode(), ""), ErrorCode.VALIDATION_FAILED);
     }
 
     private static ProblemDetail problem(HttpStatus status, String detail, ErrorCode code) {

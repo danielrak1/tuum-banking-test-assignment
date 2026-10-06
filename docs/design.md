@@ -51,7 +51,7 @@ an ADR in [`docs/adr/`](adr/):
 |---|---|---|---|
 | POST | `/accounts` | 201 + `Location` | `{customerId, country, currencies[]}` → Account |
 | GET | `/accounts/{accountId}` | 200 | Account |
-| POST | `/accounts/{accountId}/transactions` | 201 | `{amount, currency, direction, description}` → Transaction |
+| POST | `/accounts/{accountId}/transactions` | 201 (no `Location`) | `{amount, currency, direction, description}` → Transaction |
 | GET | `/accounts/{accountId}/transactions` | 200 | `Transaction[]` in insert order (`seq`); `[]` if none |
 
 ```jsonc
@@ -66,7 +66,8 @@ an ADR in [`docs/adr/`](adr/):
 ```
 
 - **Account `balances`** are listed in currency order (EUR, GBP, SEK, USD), not request order.
-- **`Location`** on create is relative: `/accounts/{accountId}`.
+- **`Location`** on create account is relative: `/accounts/{accountId}`. Create transaction has
+  no `Location`, because there is no endpoint for a single transaction.
 
 ### Input rules
 | Field | Rule |
@@ -77,11 +78,15 @@ an ADR in [`docs/adr/`](adr/):
 | `currencies` | Non-empty, no duplicates, each one of `EUR`, `SEK`, `GBP`, `USD` |
 | `currency` | One of `EUR`, `SEK`, `GBP`, `USD`, case-sensitive |
 | `direction` | `IN` or `OUT`, case-sensitive |
-| `amount` | JSON number, > 0, at most 2 decimals, at most 17 integer digits (`@Positive @Digits(integer=17, fraction=2)`) |
-| `description` | Free text: not blank, ≤ 255 characters |
+| `amount` | JSON number, > 0, at most 2 decimals, at most 17 integer digits (`NUMERIC(19,2)`). Trailing zeros don't count: `10.500` is 10.50 and `1e2` is 100.00. The response always has scale 2. (`@ValidAmount`, ADR-0001) |
+| `description` | Free text: not blank, ≤ 255 characters. Unicode spaces such as U+00A0 count as blank. |
 
-- **Free-text fields** (`customerId`, `description`) reject control characters (U+0000–U+001F,
-  U+007F), including NUL, which Postgres can't store in `varchar` or `jsonb`.
+- **Free-text fields** (`customerId`, `description`) are single-line and stored exactly as sent.
+  They reject:
+  - control characters (U+0000–U+001F, U+007F–U+009F), including tab, newline, NEL and NUL.
+    Postgres can't store NUL in `varchar` or `jsonb`;
+  - the line and paragraph separators U+2028 and U+2029;
+  - unpaired UTF-16 surrogates, which the JDBC driver would silently store as `?`.
 - **`currency` and `direction` are bound as `String`** and validated, not bound as Java enums.
   With enums, a bad value would fail inside Jackson as a generic parse error instead of returning
   the PDF's `INVALID_CURRENCY` / `INVALID_DIRECTION`.
@@ -111,13 +116,13 @@ Errors are RFC 9457 `ProblemDetail` (`application/problem+json`):
 | Transaction `currency` missing, or any currency (transaction, or an element of `currencies`) null or not EUR/SEK/GBP/USD | 400 | `INVALID_CURRENCY` | Invalid currency |
 | Supported currency, but the account has no balance in it | 422 | `INVALID_CURRENCY` | Invalid currency |
 | Direction missing, or not `IN`/`OUT` | 400 | `INVALID_DIRECTION` | Invalid direction |
-| Amount missing, unparseable, ≤ 0, more than 2 decimals, or more than 17 integer digits | 400 | `INVALID_AMOUNT` | Invalid amount |
-| Description missing, blank, or whitespace only | 400 | `DESCRIPTION_MISSING` | Description missing |
+| Amount missing, unparseable, ≤ 0, more than 2 decimals, or more than 17 integer digits (trailing zeros don't count) | 400 | `INVALID_AMOUNT` | Invalid amount |
+| Description missing, blank, or whitespace only (Unicode spaces such as U+00A0 included) | 400 | `DESCRIPTION_MISSING` | Description missing |
 | `OUT` larger than the available balance | 422 | `INSUFFICIENT_FUNDS` | Insufficient funds |
 | GET account: ID malformed / unknown | 400 / 404 | `ACCOUNT_NOT_FOUND` | Account not found |
 | POST transaction: ID malformed / unknown | 400 / 404 | `ACCOUNT_MISSING` | Account missing |
 | GET transactions: ID malformed / unknown | 400 / 404 | `INVALID_ACCOUNT` | Invalid account |
-| Malformed JSON, bad country, `currencies` list missing, empty or with duplicates, blank or too long `customerId`, description > 255, a control character in a free-text field | 400 | `VALIDATION_FAILED` | (not in PDF) |
+| Malformed JSON, bad country, `currencies` list missing, empty or with duplicates, blank or too long `customerId`, description > 255, a control character, line separator or unpaired surrogate in a free-text field | 400 | `VALIDATION_FAILED` | (not in PDF) |
 | Any other malformed parameter (a path or query value that doesn't convert to its type) | 400 | `VALIDATION_FAILED` | (not in PDF) |
 
 Protocol errors (not in PDF) come from the HTTP layer rather than the request's content, and get a
@@ -134,9 +139,19 @@ code by status:
 A 500's `detail` is generic and never carries the exception message; the full exception goes to the
 ERROR log.
 
+Every endpoint declares `consumes`/`produces` `application/json`, so a 415 or 406 is decided before
+the request is processed: a rejected `Content-Type` or `Accept` never posts a transaction or
+creates an account.
+
 How the rules apply:
 1. **Order of checks:** request validation first, then account existence, then business rules.
    For example, an unknown account plus a negative amount returns 400 `INVALID_AMOUNT`, not 404.
+   - **A malformed path ID wins.** It is part of request validation and is checked before the body:
+     a malformed ID plus an invalid or malformed body returns 400 with the endpoint's not-found
+     code (e.g. `ACCOUNT_MISSING`), not the body's code.
+   - **Business rules, in order:** first, the account must hold the currency; then there must be
+     enough funds. A currency the account doesn't hold returns 422 `INVALID_CURRENCY`, even for an
+     `OUT` larger than any balance.
 2. **400 vs 422:** 400 means the request is wrong on its own. 422 means the request is well formed,
    but the account's state rejects it.
 3. **One top-level code:** when several fields fail, `code` is taken in this priority:
@@ -144,6 +159,8 @@ How the rules apply:
    same way (then by field).
 4. **Jackson parse errors** (an unparseable `amount` such as `"abc"`, a wrong JSON type) are mapped
    by field path to that field's code. Anything else gets `VALIDATION_FAILED`.
+   *Not built yet (task 6).* Until then, every parse error gives `VALIDATION_FAILED`, and Jackson
+   coerces a JSON string amount (`"10.50"`) and accepts it. The tests for both are `@Disabled`.
 5. **Not-found codes are per endpoint** and use the PDF's own name for that endpoint. The status
    is the same everywhere: 400 if the ID is malformed, 404 if it is well formed but unknown.
 
@@ -216,6 +233,8 @@ Every message uses this envelope:
 ```
 
 Events are emitted per changed record (ADR-0004). `data` is the record's full state after the change.
+Within one request, rows are written in a fixed order: `account.created`, then `balance.created`
+in currency order; `transaction.created`, then `balance.updated`.
 
 | Routing key = `eventType` | Emitted by | `data` |
 |---|---|---|
@@ -252,8 +271,10 @@ The full test plan is Stage 4 (`docs/test-plan.md`). The design commits to these
 
 ## 8. Known limitations
 
-- **Balance overflow:** a balance pushed past `NUMERIC(19,2)` by `IN`s is not handled gracefully.
-  An individual amount is capped at 17 integer digits, so this is unrealistic.
+- **Balance overflow:** a balance pushed past `NUMERIC(19,2)` by `IN`s fails as a 500
+  `INTERNAL_ERROR` (rolled back, logged at ERROR). An amount is capped at 17 integer digits, but two
+  requests are enough: `IN 99999999999999999.99`, then `IN 0.01` on the same balance. A 422 for this
+  is planned with task 6.
 - **No outbox latency tuning:** events are published up to one poll interval (~200 ms) after commit.
 - **Docker image build skips tests:** the Dockerfile builds with `bootJar -x test`, because
   Testcontainers can't run inside `docker build`. Tests and the coverage gate belong to
