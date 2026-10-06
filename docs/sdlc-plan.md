@@ -15,7 +15,7 @@ then commits it.
 | 0. Setup | ✅ Done | JDK 25 (Temurin), Docker Desktop, gh CLI, IntelliJ + Claude Code plugin |
 | 1. Plan | ✅ Done | `intent.md` |
 | 2. Design | ✅ Done | `docs/design.md`, `docs/adr/*.md` |
-| 3. Build | 🚧 In progress: tasks 1–3 of 7 done (skeleton PR #1, create/get account PR #2, transactions PR #3) | code, `CLAUDE.md`, `.claude/skills/add-endpoint`, `.claude/agents/test-writer.md` |
+| 3. Build | 🚧 In progress: tasks 1–4 of 7 done (skeleton PR #1, create/get account PR #2, transactions PR #3, events PR #4) | code, `CLAUDE.md`, `.claude/skills/add-endpoint`, `.claude/agents/test-writer.md` |
 | 4. Test | ⬜ | tests, JaCoCo gate, `docs/test-plan.md`, contract check, k6 load test |
 | 5. Deploy | ⬜ | hooks, PR review loop, `.github/workflows/ci.yml` |
 | 6. Maintain | ⬜ | `docs/retro.md`, final README |
@@ -82,12 +82,13 @@ then commits it.
   2. schema
   3. create/get account
   4. transactions
-  5. events. Also: give the outbox its own explicitly configured `JsonMapper`, so a
-     `spring.jackson.*` change to the HTTP mapper can't silently change the §5 event format
-     (task 2 review, finding H). Also: the tests that read `outbox_event` directly
-     (`AccountApiIT`, `TransactionApiIT`, `BalanceConcurrencyIT`) will race with the poller once
-     it deletes published rows. Move their event checks to the `banking.events.all` queue,
-     waiting with Awaitility (task 3 test-writer finding).
+  5. events ✅ (`docs/plans/task-4-events.md`):
+     - outbox poller with an advisory lock and correlated confirms;
+     - the `banking.events` topology;
+     - its own event `JsonMapper` (`EventJson`, closing task 2 finding H);
+     - `payload` changed to `json` (V2);
+     - the event tests moved to the queue (closing the task 3 test-writer finding);
+     - the criterion 4 test (`EventDeliveryIT`).
   6. errors. Includes design.md §3 rule 4: map Jackson parse errors by field path to that field's
      code (e.g. `"amount": "abc"` → `INVALID_AMOUNT`), with a one-entry `errors[]`. Until then every
      parse error is `VALIDATION_FAILED` (task 2 review, finding F). Also reject a JSON string

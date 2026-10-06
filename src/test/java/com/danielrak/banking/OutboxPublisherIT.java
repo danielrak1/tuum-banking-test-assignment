@@ -1,37 +1,48 @@
 package com.danielrak.banking;
 
-import static com.danielrak.banking.BankingApi.JSON;
+import static com.danielrak.banking.BankingEvents.distinctByEventId;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
-import com.danielrak.banking.messaging.MessagingConfiguration;
+import com.danielrak.banking.BankingEvents.Event;
 import com.danielrak.banking.messaging.OutboxPublisher;
-import java.nio.charset.StandardCharsets;
+import com.github.dockerjava.api.DockerClient;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.amqp.core.Message;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.amqp.core.MessageDeliveryMode;
-import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.client.RestTestClient;
+import org.testcontainers.DockerClientFactory;
+import org.testcontainers.rabbitmq.RabbitMQContainer;
 import tools.jackson.databind.JsonNode;
 
 /**
- * White-box test of the ADR-0003 advisory lock: while another instance holds the publisher lock, this
- * instance publishes nothing and the rows stay pending; once it is released, they are published in order
- * and deleted.
+ * White-box tests of the ADR-0003 publisher:
+ * <ul>
+ *   <li>the advisory lock: while another instance holds it, this one publishes nothing and the rows stay
+ *       pending; once it is released, they are published in order and deleted;</li>
+ *   <li>the failure path: a broker paused for longer than {@code banking.outbox.confirm-timeout} (2 s)
+ *       makes a batch time out, the rows stay pending and are retried, and arrive (possibly twice) once
+ *       the broker is back.</li>
+ * </ul>
  */
 @IntegrationTest
+@ExtendWith(OutputCaptureExtension.class)
 class OutboxPublisherIT {
+
+    /** Longer than the 2 s confirm timeout, so at least one batch times out while the broker is paused. */
+    private static final Duration PAUSE = Duration.ofSeconds(3);
 
     @Autowired
     RestTestClient client;
@@ -45,14 +56,16 @@ class OutboxPublisherIT {
     @Autowired
     RabbitTemplate rabbit;
 
-    BankingApi api;
+    @Autowired
+    RabbitMQContainer rabbitContainer;
 
-    /** Messages drained from the demo queue so far, in arrival order. */
-    private final List<Message> received = new ArrayList<>();
+    BankingApi api;
+    BankingEvents events;
 
     @BeforeEach
     void setUp() {
-        api = new BankingApi(client, jdbc);
+        api = new BankingApi(client);
+        events = new BankingEvents(rabbit, api, jdbc);
     }
 
     @Test
@@ -65,8 +78,8 @@ class OutboxPublisherIT {
                 api.transact(accountId, "10.00", "EUR", "IN", "Held back");
 
                 await().during(Duration.ofSeconds(1)).atMost(Duration.ofSeconds(3)).untilAsserted(() -> {
-                    assertThat(pendingRows(accountId)).as("rows stay pending").isEqualTo(4);
-                    assertThat(eventsFor(accountId)).as("nothing published").isEmpty();
+                    assertThat(events.pendingOutboxRows(accountId)).as("rows stay pending").isEqualTo(4);
+                    assertThat(events.events(accountId)).as("nothing published").isEmpty();
                 });
             } finally {
                 // A pooled connection outlives close(), and so would a session lock: release it explicitly.
@@ -74,23 +87,51 @@ class OutboxPublisherIT {
             }
         }
 
-        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
-            assertThat(eventsFor(accountId)).hasSize(4);
-            assertThat(pendingRows(accountId)).as("published rows are deleted").isZero();
-        });
+        List<Event> published = events.awaitEvents(accountId, 4);
+        await().atMost(BankingEvents.TIMEOUT).untilAsserted(() ->
+                assertThat(events.pendingOutboxRows(accountId)).as("published rows are deleted").isZero());
 
-        List<Message> events = eventsFor(accountId);
-        assertThat(events).extracting(m -> m.getMessageProperties().getReceivedRoutingKey())
+        assertThat(published).extracting(Event::routingKey)
                 .containsExactly("account.created", "balance.created", "transaction.created", "balance.updated");
-        for (Message message : events) {
-            MessageProperties props = message.getMessageProperties();
-            JsonNode envelope = JSON.readTree(new String(message.getBody(), StandardCharsets.UTF_8));
-            assertThat(props.getReceivedExchange()).isEqualTo(MessagingConfiguration.EXCHANGE);
-            assertThat(props.getContentType()).isEqualTo(MessageProperties.CONTENT_TYPE_JSON);
-            assertThat(props.getReceivedDeliveryMode()).isEqualTo(MessageDeliveryMode.PERSISTENT);
-            assertThat(props.getMessageId()).isEqualTo(envelope.get("eventId").asString());
-            assertThat(envelope.get("eventType").asString()).isEqualTo(props.getReceivedRoutingKey());
+        for (Event event : published) {
+            assertThat(event.exchange()).isEqualTo(BankingEvents.EXCHANGE);
+            assertThat(event.contentType()).isEqualTo("application/json");
+            assertThat(event.deliveryMode()).isEqualTo(MessageDeliveryMode.PERSISTENT);
+            assertThat(event.messageId()).isEqualTo(event.eventId());
+            assertThat(event.eventType()).isEqualTo(event.routingKey());
         }
+    }
+
+    @Test
+    void keepsRowsPendingThroughAConfirmTimeoutAndPublishesThemOnceTheBrokerIsBack(CapturedOutput output) {
+        String accountId = api.createAccount("EUR");
+        int before = events.awaitEvents(accountId, 2).size();
+
+        JsonNode tx;
+        DockerClient docker = DockerClientFactory.instance().client();
+        docker.pauseContainerCmd(rabbitContainer.getContainerId()).exec();
+        try {
+            tx = api.transact(accountId, "7.00", "EUR", "IN", "Unconfirmed");
+            // Rows are deleted only on a confirm, so "still 2" across the timeout means "not published".
+            // The queue can't be read here: basic.get blocks on a paused broker.
+            await().during(PAUSE).atMost(PAUSE.plusSeconds(2)).untilAsserted(() ->
+                    assertThat(events.pendingOutboxRows(accountId)).as("rows stay pending").isEqualTo(2));
+        } finally {
+            docker.unpauseContainerCmd(rabbitContainer.getContainerId()).exec();
+        }
+
+        // At-least-once: a message sent before its confirm timed out may arrive again after the retry.
+        await().atMost(Duration.ofSeconds(30)).untilAsserted(() -> {
+            assertThat(distinctByEventId(events.events(accountId))).hasSize(before + 2);
+            assertThat(events.pendingOutboxRows(accountId)).as("published rows are deleted").isZero();
+        });
+        List<Event> published = distinctByEventId(events.events(accountId)).subList(before, before + 2);
+        assertThat(published).extracting(Event::routingKey).containsExactly("transaction.created", "balance.updated");
+        assertThat(published).extracting(e -> e.data().path("transactionId").asString())
+                .containsOnly(tx.get("transactionId").asString());
+
+        assertThat(output.getOut()).contains("Outbox publishing failed, rows stay pending and are retried");
+        await().atMost(BankingEvents.TIMEOUT).until(() -> output.getOut().contains("Outbox publishing recovered"));
     }
 
     private static void advisoryLock(Connection connection, String function) throws SQLException {
@@ -98,22 +139,5 @@ class OutboxPublisherIT {
             statement.setLong(1, OutboxPublisher.LOCK_KEY);
             statement.execute();
         }
-    }
-
-    private int pendingRows(String accountId) {
-        Integer count = jdbc.queryForObject(
-                "SELECT count(*) FROM outbox_event WHERE payload->>'accountId' = ?", Integer.class, accountId);
-        return count == null ? 0 : count;
-    }
-
-    /** Drains the demo queue, then returns the messages for this account in arrival order. */
-    private List<Message> eventsFor(String accountId) {
-        Message message;
-        while ((message = rabbit.receive(MessagingConfiguration.DEMO_QUEUE)) != null) {
-            received.add(message);
-        }
-        return received.stream()
-                .filter(m -> accountId.equals(JSON.readTree(m.getBody()).get("accountId").asString()))
-                .toList();
     }
 }

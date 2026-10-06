@@ -18,7 +18,7 @@ banking:
   outbox:   # ADR-0003
     poll-interval: 200ms
     batch-size: 100
-    confirm-timeout: 5s   # per batch; unconfirmed rows stay pending and are retried
+    confirm-timeout: 2s   # per batch; unconfirmed rows stay pending and are retried
 
 mybatis:
   type-handlers-package: com.danielrak.banking.persistence

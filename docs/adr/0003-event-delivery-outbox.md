@@ -30,7 +30,9 @@ Use a **transactional outbox**:
    They are retried on the next poll.
 
 **Guarantee: at-least-once.** A crash after the broker acks but before the `DELETE` commits
-re-publishes that row. Consumers dedupe on `eventId` (= AMQP `message_id`).
+re-publishes that row. Duplicates also follow any publish failure: a message whose confirm timed out
+may still have reached the queue, and rows sent after a nack or timeout in the same batch are sent
+again on the next poll. Consumers dedupe on `eventId` (= AMQP `message_id`).
 
 **Not used:** `mandatory`/publisher returns. The service declares a demo queue bound to `#`, so
 every message is routable.
@@ -125,9 +127,9 @@ a designed contract unless it is combined with an outbox anyway.
 ## Action Items
 1. [ ] Add the `outbox_event` table in `V1__init.sql` (`id bigserial`, `event_id uuid UNIQUE`, `routing_key`, `payload jsonb`, `created_at`).
 2. [ ] Add `OutboxWriter`, called by services in the business transaction.
-3. [ ] Add `OutboxPublisher`: `@Scheduled`, advisory xact lock, batch, correlated confirms, `DELETE` on ack.
-4. [ ] Declare the `banking.events` topic exchange and the `banking.events.all` demo queue bound to `#`.
-5. [ ] Tests:
+3. [x] Add `OutboxPublisher`: `@Scheduled`, advisory xact lock, batch, correlated confirms, `DELETE` on ack.
+4. [x] Declare the `banking.events` topic exchange and the `banking.events.all` demo queue bound to `#`.
+5. [x] Tests:
    - pause the broker, post a transaction (201, rows pending), unpause, assert the event arrives
      and the outbox is empty;
    - a rejected request leaves no outbox row.

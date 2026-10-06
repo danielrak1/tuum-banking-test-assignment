@@ -1,25 +1,28 @@
 package com.danielrak.banking;
 
+import static com.danielrak.banking.BankingEvents.assertEnvelope;
+import static com.danielrak.banking.BankingEvents.routingKeys;
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.danielrak.banking.BankingEvents.Event;
 import java.math.BigDecimal;
 import java.net.URI;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
 import org.assertj.core.api.SoftAssertions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -47,6 +50,16 @@ class AccountApiIT {
 
     @Autowired
     JdbcTemplate jdbc;
+
+    @Autowired
+    RabbitTemplate rabbitTemplate;
+
+    BankingEvents events;
+
+    @BeforeEach
+    void setUp() {
+        events = new BankingEvents(rabbitTemplate, new BankingApi(client), jdbc);
+    }
 
     // ---------------------------------------------------------------- success (§2)
 
@@ -121,7 +134,7 @@ class AccountApiIT {
         assertThat(errors).hasSize(1);
         assertThat(errors.get(0).get("field").asString()).isEqualTo(field);
         assertThat(errors.get(0).get("code").asString()).isEqualTo("INVALID_CURRENCY");
-        assertNoOutboxRowMentions(customerId);
+        assertNoEventMentions(customerId);
     }
 
     // ---------------------------------------------------------------- VALIDATION_FAILED (§3)
@@ -214,11 +227,7 @@ class AccountApiIT {
         JsonNode fetched = JSON.readTree(get(accountId).getResponseBody());
         assertThat(fetched.get("customerId").asString()).isEqualTo(customerId);
 
-        String eventCustomerId = jdbc.queryForObject("""
-                SELECT payload->'data'->>'customerId' FROM outbox_event
-                WHERE payload->>'accountId' = ? AND routing_key = 'account.created'
-                """, String.class, accountId);
-        assertThat(eventCustomerId).isEqualTo(customerId);
+        assertThat(accountCreatedEvent(accountId).data().get("customerId").asString()).isEqualTo(customerId);
     }
 
     @Test
@@ -231,11 +240,10 @@ class AccountApiIT {
         assertThat(errors).hasSize(1);
         assertThat(errors.get(0).get("field").asString()).isEqualTo("customerId");
         assertThat(errors.get(0).get("code").asString()).isEqualTo("VALIDATION_FAILED");
-        Integer created = jdbc.queryForObject("""
-                SELECT count(*) FROM outbox_event
-                WHERE routing_key = 'account.created' AND payload->'data'->>'customerId' = '12345'
-                """, Integer.class);
-        assertThat(created).isZero();
+        events.fence();
+        assertThat(events.eventsMatching(e -> "account.created".equals(e.eventType())
+                && "12345".equals(e.data().path("customerId").asString())))
+                .as("account.created events with customerId 12345").isEmpty();
     }
 
     @Test
@@ -249,11 +257,7 @@ class AccountApiIT {
         JsonNode fetched = JSON.readTree(get(accountId).getResponseBody());
         assertThat(fetched.get("customerId").asString()).isEqualTo(customerId);
 
-        String eventCustomerId = jdbc.queryForObject("""
-                SELECT payload->'data'->>'customerId' FROM outbox_event
-                WHERE payload->>'accountId' = ? AND routing_key = 'account.created'
-                """, String.class, accountId);
-        assertThat(eventCustomerId).isEqualTo(customerId);
+        assertThat(accountCreatedEvent(accountId).data().get("customerId").asString()).isEqualTo(customerId);
     }
 
     @ParameterizedTest(name = "{0}")
@@ -266,7 +270,7 @@ class AccountApiIT {
         assertThat(errors.get(0).get("field").asString()).isEqualTo(field);
         assertThat(errors.get(0).get("code").asString()).isEqualTo("VALIDATION_FAILED");
         if (marker != null) {
-            assertNoOutboxRowMentions(marker);
+            assertNoEventMentions(marker);
         } else {
             assertNoAccountCreatedWithBlankCustomerId();
         }
@@ -280,7 +284,7 @@ class AccountApiIT {
     void rejectsMalformedJsonWithValidationFailed(String template) {
         String marker = uniqueCustomerId();
         expectProblem(post(template.formatted(marker)), 400, "VALIDATION_FAILED");
-        assertNoOutboxRowMentions(marker);
+        assertNoEventMentions(marker);
     }
 
     // ---------------------------------------------------------------- several failures (§3 rule 3)
@@ -324,50 +328,40 @@ class AccountApiIT {
         assertThat(errors.get(0).get("field").asString()).isEqualTo("currencies[0]");
         assertThat(errors.get(1).get("field").asString()).isEqualTo("currencies[2]");
         assertThat(errors.get(2).get("field").asString()).isEqualTo("country");
-        assertNoOutboxRowMentions(customerId);
+        assertNoEventMentions(customerId);
     }
 
-    // ---------------------------------------------------------------- outbox (§5)
+    // ---------------------------------------------------------------- events (§5)
 
     @Test
-    void writesAccountCreatedThenOneBalanceCreatedPerCurrencyToOutbox() {
+    void publishesAccountCreatedThenOneBalanceCreatedPerCurrency() {
         String customerId = uniqueCustomerId();
         JsonNode account = createAccount(customerId, "GB", "GBP", "EUR", "USD");
         String accountId = account.get("accountId").asString();
 
-        List<Map<String, Object>> rows = jdbc.queryForList("""
-                SELECT event_id::text AS event_id, routing_key, payload::text AS payload
-                FROM outbox_event WHERE payload->>'accountId' = ? ORDER BY id
-                """, accountId);
+        List<Event> published = events.awaitEvents(accountId, 4);
 
-        assertThat(rows).hasSize(4);
-        assertThat(rows).extracting(r -> r.get("routing_key"))
+        assertThat(published).hasSize(4);
+        assertThat(routingKeys(published))
                 .containsExactly("account.created", "balance.created", "balance.created", "balance.created");
 
         Set<String> eventIds = new HashSet<>();
         List<String> balanceCurrencies = new ArrayList<>();
-        for (int i = 0; i < rows.size(); i++) {
-            Map<String, Object> row = rows.get(i);
-            JsonNode envelope = JSON.readTree((String) row.get("payload"));
-            assertThat(fieldNames(envelope))
-                    .containsExactlyInAnyOrder("eventId", "eventType", "occurredAt", "accountId", "data");
+        for (int i = 0; i < published.size(); i++) {
+            Event event = published.get(i);
+            assertEnvelope(event, accountId);
+            eventIds.add(event.eventId());
 
-            String eventId = envelope.get("eventId").asString();
-            assertThat(UUID.fromString(eventId).toString()).isEqualTo(eventId);
-            assertThat(eventId).isEqualTo(row.get("event_id"));
-            eventIds.add(eventId);
-            assertThat(envelope.get("eventType").asString()).isEqualTo(row.get("routing_key"));
-            assertThat(Instant.parse(envelope.get("occurredAt").asString())).isNotNull();
-            assertThat(envelope.get("accountId").asString()).isEqualTo(accountId);
-
-            JsonNode data = envelope.get("data");
+            JsonNode data = event.data();
             if (i == 0) {
-                assertThat(fieldNames(data)).containsExactlyInAnyOrder("accountId", "customerId", "country");
+                assertThat(fieldNames(data)).as("§5 data fields, in order")
+                        .containsExactly("accountId", "customerId", "country");
                 assertThat(data.get("accountId").asString()).isEqualTo(accountId);
                 assertThat(data.get("customerId").asString()).isEqualTo(customerId);
                 assertThat(data.get("country").asString()).isEqualTo("GB");
             } else {
-                assertThat(fieldNames(data)).containsExactlyInAnyOrder("accountId", "currency", "availableAmount");
+                assertThat(fieldNames(data)).as("§5 data fields, in order")
+                        .containsExactly("accountId", "currency", "availableAmount");
                 assertThat(data.get("accountId").asString()).isEqualTo(accountId);
                 balanceCurrencies.add(data.get("currency").asString());
                 JsonNode amount = data.get("availableAmount");
@@ -480,19 +474,20 @@ class AccountApiIT {
         assertThat(body).as("GET by uppercased ID equals POST response body").isEqualTo(created);
     }
 
-    // ---------------------------------------------------------------- outbox (§5)
+    // ---------------------------------------------------------------- events (§5)
 
     @Test
-    void getAccountWritesNoOutboxRow() {
+    void getAccountPublishesNoEvent() {
         JsonNode created = createAccount(uniqueCustomerId(), "EE", "EUR", "GBP");
         String accountId = created.get("accountId").asString();
-        List<String> before = outboxRoutingKeys(accountId);
-        assertThat(before).containsExactly("account.created", "balance.created", "balance.created");
+        List<Event> before = events.awaitEvents(accountId, 3);
+        assertThat(routingKeys(before)).containsExactly("account.created", "balance.created", "balance.created");
 
         EntityExchangeResult<String> result = get(accountId);
         assertThat(result.getStatus().value()).as(result.getResponseBody()).isEqualTo(200);
 
-        assertThat(outboxRoutingKeys(accountId)).isEqualTo(before);
+        events.fence();
+        assertThat(events.events(accountId)).as("no event after GET").isEqualTo(before);
     }
 
     // ---------------------------------------------------------------- helpers
@@ -501,12 +496,6 @@ class AccountApiIT {
         return client.get().uri("/accounts/{accountId}", accountId)
                 .exchange()
                 .returnResult(String.class);
-    }
-
-    private List<String> outboxRoutingKeys(String accountId) {
-        return jdbc.queryForList(
-                "SELECT routing_key FROM outbox_event WHERE payload->>'accountId' = ? ORDER BY id",
-                String.class, accountId);
     }
 
     private EntityExchangeResult<String> post(String json) {
@@ -556,20 +545,31 @@ class AccountApiIT {
         return new ArrayList<>(node.propertyNames());
     }
 
-    private void assertNoOutboxRowMentions(String marker) {
-        Integer count = jdbc.queryForObject(
-                "SELECT count(*) FROM outbox_event WHERE payload::text LIKE ?",
-                Integer.class, "%" + marker + "%");
-        assertThat(count).isZero();
+    /** The account's {@code account.created} event (§5), once published. */
+    private Event accountCreatedEvent(String accountId) {
+        List<Event> published = events.awaitEvents(accountId, 1);
+        Event first = published.getFirst();
+        assertThat(first.eventType()).as("first event of %s", accountId).isEqualTo("account.created");
+        assertEnvelope(first, accountId);
+        return first;
     }
 
+    /** A rejected request published nothing: after the fence, no event mentions {@code marker}. */
+    private void assertNoEventMentions(String marker) {
+        events.fence();
+        assertThat(events.eventsMentioning(marker)).as("events mentioning %s", marker).isEmpty();
+    }
+
+    /** After the fence, no {@code account.created} event (from any test) has a blank or missing customerId. */
     private void assertNoAccountCreatedWithBlankCustomerId() {
-        Integer count = jdbc.queryForObject("""
-                SELECT count(*) FROM outbox_event
-                WHERE routing_key = 'account.created'
-                  AND coalesce(trim(payload->'data'->>'customerId'), '') = ''
-                """, Integer.class);
-        assertThat(count).isZero();
+        events.fence();
+        assertThat(events.eventsMatching(e -> "account.created".equals(e.eventType())
+                && blankOrMissing(e.data() == null ? null : e.data().get("customerId"))))
+                .as("account.created events with a blank customerId").isEmpty();
+    }
+
+    private static boolean blankOrMissing(JsonNode value) {
+        return value == null || value.isNull() || (value.isString() && value.asString().isBlank());
     }
 
     private static String uniqueCustomerId() {

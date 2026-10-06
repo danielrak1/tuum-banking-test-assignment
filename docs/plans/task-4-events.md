@@ -1,7 +1,7 @@
 # Task 4: Events (`feat/events`)
 
-> **Status:** Part 1 done 2026-10-06 and committed locally. Part 2 (queue-based tests, criterion 4,
-> docs) is next.
+> **Status:** done 2026-10-06. Part 1 (publisher) and Part 2 (queue-based tests, criterion 4, docs)
+> are built and green; outcomes are below.
 
 ## Part 1 outcome
 - **Built:** steps 1–4, `EventJsonTest` (2 golden cases) and `OutboxPublisherIT`.
@@ -106,7 +106,7 @@ banking:
   outbox:
     poll-interval: 200ms
     batch-size: 100
-    confirm-timeout: 5s
+    confirm-timeout: 2s   # was 5s in the first draft; lowered in Part 2, see the outcome
 spring.rabbitmq:
   connection-timeout: 5s      # don't hang the poller (and its open DB transaction) on a dead broker
   channel-rpc-timeout: 5s     # default is 10 min; a channel.open during a paused broker would block that long
@@ -233,3 +233,38 @@ New `BankingEvents` helper (`BankingApi` stays HTTP-only):
    `psql` shows `outbox_event` empty. `docker compose pause rabbitmq`, POST, and the rows stay
    pending; `unpause`, and they drain.
 4. Show you the `test-writer` findings and wait before any commit (per memory). Then commit on `feat/events`.
+
+## Part 2 outcome
+- **`BankingEvents`** (written by me):
+  - a JVM-wide buffer drained from `banking.events.all`;
+  - `awaitEvents`, `fence()`, `eventsMentioning`, `pendingOutboxRows` and `distinctByEventId`;
+  - added by `test-writer`: `assertEnvelope`, `routingKeys` and `eventsMatching`.
+- **`test-writer`** moved every event check in `AccountApiIT`, `TransactionApiIT`, `BalanceConcurrencyIT` and
+  `ProtocolErrorsIT` to the queue, and wrote `EventDeliveryIT` (criterion 4).
+  - Only `BankingEvents.pendingOutboxRows` still reads `outbox_event`.
+  - `BalanceConcurrencyIT` also checks the per-balance order of `balance.updated` against `seq`.
+  - Envelope and `data` field order are asserted exactly (§5 "fields appear in the order listed").
+  - No spec-vs-code mismatches.
+- **Findings, and what was decided:**
+  1. **`EventDeliveryIT` paused the broker for about 1 s, less than the 5 s confirm timeout.** The
+     confirm arrived late and the batch succeeded, so the timeout and retry path never ran.
+     - `confirm-timeout` is now 2 s.
+     - `OutboxPublisherIT` gained a case that pauses for 3 s, past the timeout. The rows stay pending,
+       and the test captures the WARN. After the unpause the events arrive (deduped), the outbox
+       empties, and the recovery INFO is logged.
+  2. **The pause tests don't read the queue while the broker is paused,** because `basic.get` blocks.
+     "Rows still pending" is the proof instead, since rows are deleted only on a confirm. Agreed.
+  3. **The exact field-order assertions stay.**
+  4. **Not asserted:** how `transaction.created` and `balance.updated` interleave across a balance.
+     Accepted.
+  5. **`BankingApi`:** the agent kept an unused `JdbcTemplate` constructor parameter. Removed.
+- **`./gradlew cleanTest check`:** 166 tests, 5 skipped (the `@Disabled` task-6 tests), 0 failed.
+  Lines 0.956, branches 0.890.
+- **Known coverage gaps in `OutboxPublisher`:** none of these paths runs in any test.
+  - The **nack** branch: a nack needs a broker-internal error that can't be provoked in a test.
+  - **"Broker unavailable"** (`AmqpException`): a pause keeps the cached channel open, so it never
+    throws.
+  - **A full batch looping straight into the next one:** no test builds a backlog of 100 rows or more.
+  - The **repeat-failure DEBUG** log.
+  - The **`ExecutionException` and interrupt** catches.
+

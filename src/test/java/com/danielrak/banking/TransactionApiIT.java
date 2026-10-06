@@ -4,10 +4,12 @@ import static com.danielrak.banking.BankingApi.JSON;
 import static com.danielrak.banking.BankingApi.assertErrors;
 import static com.danielrak.banking.BankingApi.expectProblem;
 import static com.danielrak.banking.BankingApi.fieldNames;
+import static com.danielrak.banking.BankingEvents.assertEnvelope;
+import static com.danielrak.banking.BankingEvents.routingKeys;
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.danielrak.banking.BankingEvents.Event;
 import java.math.BigDecimal;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -22,6 +24,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -32,7 +35,7 @@ import tools.jackson.databind.JsonNode;
 
 /**
  * Black-box contract tests for POST and GET /accounts/{accountId}/transactions:
- * design.md §2 (API), §3 (errors), §5 (events, read from outbox_event until the poller exists).
+ * design.md §2 (API), §3 (errors), §5 (events, read from the banking.events.all queue).
  */
 @IntegrationTest
 class TransactionApiIT {
@@ -49,11 +52,16 @@ class TransactionApiIT {
     @Autowired
     JdbcTemplate jdbc;
 
+    @Autowired
+    RabbitTemplate rabbitTemplate;
+
     BankingApi api;
+    BankingEvents events;
 
     @BeforeEach
     void setUp() {
-        api = new BankingApi(client, jdbc);
+        api = new BankingApi(client);
+        events = new BankingEvents(rabbitTemplate, api, jdbc);
     }
 
     // ================================================================ POST success (§2)
@@ -106,7 +114,7 @@ class TransactionApiIT {
     @MethodSource("normalisedAmounts")
     void acceptsAmountWithTrailingZerosOrExponentNormalisedToScale2(String sent, String expected) {
         String accountId = api.createAccount("EUR");
-        long before = api.maxOutboxId(accountId);
+        int before = events.awaitEvents(accountId, 2).size();
 
         JsonNode body = api.transact(accountId, sent, "EUR", "IN", "Normalised " + sent);
         assertTransaction(body, accountId, expected, "EUR", "IN", "Normalised " + sent, expected);
@@ -244,7 +252,7 @@ class TransactionApiIT {
     void acceptsFreeTextDescriptionAndStoresItUnchanged(String label, String escaped, String expected) {
         // §2: free text is stored exactly as sent; the JSON escapes put the exact UTF-16 on the wire.
         String accountId = api.createAccount("EUR");
-        long before = api.maxOutboxId(accountId);
+        int before = events.awaitEvents(accountId, 2).size();
 
         EntityExchangeResult<String> result = api.postTransactionRaw(accountId,
                 body("10.00", "\"EUR\"", "\"IN\"", "\"" + escaped + "\""));
@@ -256,19 +264,15 @@ class TransactionApiIT {
         assertThat(list).hasSize(1);
         assertThat(list.get(0).get("description").asString()).isEqualTo(expected);
 
-        assertTransactionEvents(accountId, before, tx);
-        String eventDescription = jdbc.queryForObject("""
-                SELECT payload->'data'->>'description' FROM outbox_event
-                WHERE payload->>'accountId' = ? AND routing_key = 'transaction.created'
-                """, String.class, accountId);
-        assertThat(eventDescription).isEqualTo(expected);
+        List<Event> added = assertTransactionEvents(accountId, before, tx);
+        assertThat(added.getFirst().data().get("description").asString()).isEqualTo(expected);
     }
 
     @Test
     @Disabled("task 6: reject duplicate JSON keys, §3 rule 4")
     void rejectsDuplicateAmountKeyWithInvalidAmount() {
         String accountId = api.createAccount("EUR");
-        long before = api.maxOutboxId(accountId);
+        int before = events.awaitEvents(accountId, 2).size();
         JsonNode problem = expectProblem(api.postTransactionRaw(accountId, """
                 {"amount": 1.00, "currency": "EUR", "direction": "IN", "description": "Dup", "amount": 5000.00}
                 """), 400, "INVALID_AMOUNT");
@@ -281,7 +285,7 @@ class TransactionApiIT {
     @Disabled("task 6: reject scalar coercion into strings, §3 rule 4")
     void rejectsNonStringDescriptionWithDescriptionMissing(String description) {
         String accountId = api.createAccount("EUR");
-        long before = api.maxOutboxId(accountId);
+        int before = events.awaitEvents(accountId, 2).size();
         JsonNode problem = expectProblem(
                 api.postTransactionRaw(accountId, body("10.00", "\"EUR\"", "\"IN\"", description)),
                 400, "DESCRIPTION_MISSING");
@@ -294,7 +298,7 @@ class TransactionApiIT {
     void rejectsInvalidFieldWith400AndFieldCode(String label, String amount, String currency, String direction,
                                                 String description, String field, String code) {
         String accountId = api.createAccount("EUR");
-        long before = api.maxOutboxId(accountId);
+        int before = events.awaitEvents(accountId, 2).size();
 
         JsonNode problem = expectProblem(
                 api.postTransactionRaw(accountId, body(amount, currency, direction, description)), 400, code);
@@ -310,7 +314,7 @@ class TransactionApiIT {
             "not json"})
     void rejectsMalformedJsonWithValidationFailed(String json) {
         String accountId = api.createAccount("EUR");
-        long before = api.maxOutboxId(accountId);
+        int before = events.awaitEvents(accountId, 2).size();
 
         expectProblem(api.postTransactionRaw(accountId, json), 400, "VALIDATION_FAILED");
 
@@ -341,7 +345,7 @@ class TransactionApiIT {
     @Test
     void reportsAllFourFailingFieldsWithInvalidCurrencyOnTop() {
         String accountId = api.createAccount("EUR");
-        long before = api.maxOutboxId(accountId);
+        int before = events.awaitEvents(accountId, 2).size();
 
         JsonNode problem = expectProblem(api.postTransactionRaw(accountId, """
                 {"amount": -1, "currency": "JPY", "direction": "in", "description": ""}
@@ -383,7 +387,7 @@ class TransactionApiIT {
     @Test
     void rejectsSupportedCurrencyNotHeldWith422InvalidCurrency() {
         String accountId = api.createAccount("EUR");
-        long before = api.maxOutboxId(accountId);
+        int before = events.awaitEvents(accountId, 2).size();
 
         expectProblem(api.postTransaction(accountId, "10.00", "USD", "IN", "Not held"), 422, "INVALID_CURRENCY");
 
@@ -396,11 +400,12 @@ class TransactionApiIT {
     void rejectsOutOverBalanceWithInsufficientFundsAndLeavesStateUnchanged() {
         String accountId = api.createAccount("EUR");
         JsonNode opening = api.transact(accountId, "100.00", "EUR", "IN", "Opening");
-        long before = api.maxOutboxId(accountId);
+        int before = events.awaitEvents(accountId, 4).size();
 
         expectProblem(api.postTransaction(accountId, "100.01", "EUR", "OUT", "Too much"), 422, "INSUFFICIENT_FUNDS");
 
-        assertThat(api.outboxRowsAfter(accountId, before)).as("no phantom events").isEmpty();
+        events.fence();
+        assertThat(events.events(accountId)).as("no phantom events").hasSize(before);
         BigDecimal stored = api.balance(accountId, "EUR");
         assertThat(stored).isEqualByComparingTo(new BigDecimal("100.00"));
         List<JsonNode> list = api.listTransactions(accountId);
@@ -420,7 +425,7 @@ class TransactionApiIT {
     @Test
     void rejectsOutOnZeroBalanceWithInsufficientFunds() {
         String accountId = api.createAccount("EUR");
-        long before = api.maxOutboxId(accountId);
+        int before = events.awaitEvents(accountId, 2).size();
 
         expectProblem(api.postTransaction(accountId, "0.01", "EUR", "OUT", "Nothing there"), 422, "INSUFFICIENT_FUNDS");
 
@@ -439,7 +444,7 @@ class TransactionApiIT {
     void rejectsUnknownAccountIdWith404AccountMissingAndWritesNoEvent() {
         String unknownId = UUID.randomUUID().toString();
         expectProblem(api.postTransaction(unknownId, "10.00", "EUR", "IN", "Unknown"), 404, "ACCOUNT_MISSING");
-        api.assertNoOutboxRowMentions(unknownId);
+        assertNoEventMentions(unknownId);
     }
 
     // ================================================================ POST order of checks (§3 rule 1)
@@ -465,21 +470,21 @@ class TransactionApiIT {
         JsonNode problem = expectProblem(
                 api.postTransaction(unknownId, "-5.00", "EUR", "IN", "Unknown and negative"), 400, "INVALID_AMOUNT");
         assertErrors(problem, "amount", "INVALID_AMOUNT");
-        api.assertNoOutboxRowMentions(unknownId);
+        assertNoEventMentions(unknownId);
     }
 
     @Test
     void checksAccountExistenceBeforeCurrencyHeld() {
         String unknownId = UUID.randomUUID().toString();
         expectProblem(api.postTransaction(unknownId, "10.00", "SEK", "OUT", "Unknown account"), 404, "ACCOUNT_MISSING");
-        api.assertNoOutboxRowMentions(unknownId);
+        assertNoEventMentions(unknownId);
     }
 
     @Test
     void checksCurrencyHeldBeforeInsufficientFunds() {
         String accountId = api.createAccount("EUR");
         api.transact(accountId, "10.00", "EUR", "IN", "Opening");
-        long before = api.maxOutboxId(accountId);
+        int before = events.awaitEvents(accountId, 4).size();
 
         expectProblem(api.postTransaction(accountId, "1000000.00", "USD", "OUT", "Not held and too much"),
                 422, "INVALID_CURRENCY");
@@ -487,17 +492,17 @@ class TransactionApiIT {
         assertNothingChanged(accountId, before, 1, "EUR", "10.00");
     }
 
-    // ================================================================ POST outbox (§5)
+    // ================================================================ POST events (§5)
 
     @Test
-    void writesTransactionCreatedThenBalanceUpdatedPerTransaction() {
+    void publishesTransactionCreatedThenBalanceUpdatedPerTransaction() {
         String accountId = api.createAccount("EUR", "SEK");
 
-        long beforeIn = api.maxOutboxId(accountId);
+        int beforeIn = events.awaitEvents(accountId, 3).size();
         JsonNode in = api.transact(accountId, "100.00", "EUR", "IN", "Salary");
         assertTransactionEvents(accountId, beforeIn, in);
 
-        long beforeOut = api.maxOutboxId(accountId);
+        int beforeOut = beforeIn + 2;
         JsonNode out = api.transact(accountId, "30.50", "EUR", "OUT", "Groceries");
         assertTransactionEvents(accountId, beforeOut, out);
     }
@@ -580,12 +585,13 @@ class TransactionApiIT {
     }
 
     @Test
-    void listingTransactionsWritesNoOutboxRow() {
+    void listingTransactionsPublishesNoEvent() {
         String accountId = api.createAccount("EUR");
         api.transact(accountId, "1.00", "EUR", "IN", "Opening");
-        long before = api.maxOutboxId(accountId);
+        List<Event> before = events.awaitEvents(accountId, 4);
         api.listTransactions(accountId);
-        assertThat(api.outboxRowsAfter(accountId, before)).isEmpty();
+        events.fence();
+        assertThat(events.events(accountId)).as("no event after listing").isEqualTo(before);
     }
 
     // ================================================================ helpers
@@ -642,36 +648,40 @@ class TransactionApiIT {
         return balances;
     }
 
-    /** A rejected request left no outbox row, no transaction and an unchanged balance. */
-    private void assertNothingChanged(String accountId, long outboxBefore, int transactionsBefore,
+    /** A rejected request published no event, added no transaction and left the balance unchanged. */
+    private void assertNothingChanged(String accountId, int eventsBefore, int transactionsBefore,
                                       String currency, String balance) {
-        assertThat(api.outboxRowsAfter(accountId, outboxBefore)).as("no new outbox rows").isEmpty();
+        events.fence();
+        assertThat(events.events(accountId)).as("no new events").hasSize(eventsBefore);
         assertThat(api.balance(accountId, currency)).isEqualByComparingTo(new BigDecimal(balance));
         assertThat(api.listTransactions(accountId)).as("no transaction added").hasSize(transactionsBefore);
     }
 
-    private void assertTransactionEvents(String accountId, long beforeId, JsonNode tx) {
-        List<Map<String, Object>> rows = api.outboxRowsAfter(accountId, beforeId);
-        assertThat(rows).extracting(r -> r.get("routing_key"))
-                .containsExactly("transaction.created", "balance.updated");
+    /** A rejected request published nothing: after the fence, no event mentions {@code marker}. */
+    private void assertNoEventMentions(String marker) {
+        events.fence();
+        assertThat(events.eventsMentioning(marker)).as("events mentioning %s", marker).isEmpty();
+    }
+
+    /**
+     * Waits for the 2 events of {@code tx}, which follow the account's first {@code before} events, asserts
+     * them against §5 and returns them.
+     */
+    private List<Event> assertTransactionEvents(String accountId, int before, JsonNode tx) {
+        List<Event> published = events.awaitEvents(accountId, before + 2);
+        assertThat(published).as("events of %s", accountId).hasSize(before + 2);
+        List<Event> added = published.subList(before, before + 2);
+        assertThat(routingKeys(added)).containsExactly("transaction.created", "balance.updated");
 
         List<JsonNode> datas = new ArrayList<>();
-        for (Map<String, Object> row : rows) {
-            JsonNode envelope = JSON.readTree((String) row.get("payload"));
-            assertThat(fieldNames(envelope))
-                    .containsExactlyInAnyOrder("eventId", "eventType", "occurredAt", "accountId", "data");
-            String eventId = envelope.get("eventId").asString();
-            assertThat(UUID.fromString(eventId).toString()).isEqualTo(eventId);
-            assertThat(eventId).isEqualTo(row.get("event_id"));
-            assertThat(envelope.get("eventType").asString()).isEqualTo(row.get("routing_key"));
-            assertThat(Instant.parse(envelope.get("occurredAt").asString())).isNotNull();
-            assertThat(envelope.get("accountId").asString()).isEqualTo(accountId);
-            datas.add(envelope.get("data"));
+        for (Event event : added) {
+            assertEnvelope(event, accountId);
+            datas.add(event.data());
         }
-        assertThat(rows.get(0).get("event_id")).isNotEqualTo(rows.get(1).get("event_id"));
+        assertThat(added.get(0).eventId()).isNotEqualTo(added.get(1).eventId());
 
         JsonNode created = datas.get(0);
-        assertThat(fieldNames(created)).containsExactlyInAnyOrder(
+        assertThat(fieldNames(created)).as("§5 data fields, in order").containsExactly(
                 "transactionId", "accountId", "amount", "currency", "direction", "description", "balanceAfter");
         assertThat(created.get("transactionId").asString()).isEqualTo(tx.get("transactionId").asString());
         assertThat(created.get("accountId").asString()).isEqualTo(accountId);
@@ -683,12 +693,13 @@ class TransactionApiIT {
                 "data.balanceAfter");
 
         JsonNode updated = datas.get(1);
-        assertThat(fieldNames(updated)).containsExactlyInAnyOrder(
+        assertThat(fieldNames(updated)).as("§5 data fields, in order").containsExactly(
                 "accountId", "currency", "availableAmount", "transactionId");
         assertThat(updated.get("accountId").asString()).isEqualTo(accountId);
         assertThat(updated.get("currency").asString()).isEqualTo(tx.get("currency").asString());
         assertMoney(updated.get("availableAmount"), tx.get("balanceAfter").decimalValue().toPlainString(),
                 "data.availableAmount");
         assertThat(updated.get("transactionId").asString()).isEqualTo(tx.get("transactionId").asString());
+        return added;
     }
 }

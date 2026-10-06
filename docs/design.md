@@ -41,7 +41,7 @@ an ADR in [`docs/adr/`](adr/):
 | Runtime | Java 25, Spring Boot **4.1.0** (supports Java 17–26), Gradle wrapper 9.x |
 | Web | `spring-boot-starter-webmvc`, `spring-boot-starter-validation`, Jackson 3 (`tools.jackson`) |
 | Persistence | MyBatis Spring Boot Starter **4.x** (pin the patch at build time), `spring-boot-starter-flyway`, PostgreSQL |
-| Messaging | `spring-boot-starter-amqp` (Spring AMQP 4, `JacksonJsonMessageConverter`, correlated publisher confirms) |
+| Messaging | `spring-boot-starter-amqp` (Spring AMQP 4, correlated publisher confirms). No message converter: the outbox payload is already the JSON body, serialised by the event mapper (§5) |
 | API docs | springdoc-openapi **v3** (`springdoc-openapi-starter-webmvc-ui`), Swagger UI at `/swagger-ui.html` |
 | Tests | JUnit 5, `spring-boot-testcontainers` + `@ServiceConnection` (Postgres, RabbitMQ), JaCoCo gate ≥ 0.80 |
 
@@ -200,10 +200,12 @@ CREATE TABLE outbox_event (
     id          bigserial    PRIMARY KEY,   -- publish order (per balance = commit order)
     event_id    uuid         NOT NULL UNIQUE,
     routing_key varchar(64)  NOT NULL,
-    payload     jsonb        NOT NULL,
+    payload     jsonb        NOT NULL,   -- json since V2
     created_at  timestamptz  NOT NULL DEFAULT now()
 );
 ```
+
+`V2__outbox_payload_json.sql` changes `outbox_event.payload` to `json`.
 
 - **`balance`:** the composite primary key enforces one balance per currency per account.
   `CHECK (available_amount >= 0)` is a backstop behind ADR-0002.
@@ -215,16 +217,24 @@ CREATE TABLE outbox_event (
   commit order and `balance_after` reads as a running balance.
 - **`outbox_event`:** a row is deleted once the broker confirms the message (ADR-0003). The table
   is infrastructure, not a domain record, so it is excluded from "every insert/update is published".
+  `payload` is `json`, not `jsonb`: `json` keeps the text exactly as written, so the published body
+  is byte for byte what the event mapper serialised. `jsonb` would reorder keys and rewrite
+  whitespace.
 
 ## 5. Event contract
 
 | Property | Value |
 |---|---|
 | Exchange | `banking.events`, topic, durable. Declared by the service. |
-| Messages | JSON, persistent, `content_type=application/json`, `message_id = eventId` |
-| Demo queue | `banking.events.all`, bound to `#`, so events are visible in the RabbitMQ UI (localhost:15672). Real consumers declare and own their own queues. |
-| Delivery | At-least-once. Consumers must dedupe on `eventId`. |
-| Ordering | Ordered per balance (account + currency), by outbox `id`. Not a global commit order: see ADR-0003. |
+| Messages | Published to `banking.events` with routing key = `eventType`. JSON body (UTF-8), persistent, `content_type=application/json`, `message_id = eventId` |
+| Demo queue | `banking.events.all`, durable, bound to `#`, so events are visible in the RabbitMQ UI (localhost:15672). It is capped at 10,000 messages with `x-overflow=drop-head`: nothing consumes it under compose, so when it is full the oldest events are dropped. Real consumers declare and own their own queues. |
+| Delivery | At-least-once. Duplicates can follow **any** publish failure, not only a crash: a message whose confirm timed out may still have reached the queue, and messages sent after a nack or timeout in the same batch are sent again on the next poll. Consumers must dedupe on `eventId`. |
+| Ordering | Ordered per balance (account + currency), by outbox `id`. Also, a write that commits before another one starts is published first, because one publisher at a time sends rows in `id` order. Concurrent writes on different balances have no defined order: see ADR-0003. |
+| Latency | Asynchronous: an event is published up to one poll interval (~200 ms) after commit, or later while the broker is down. |
+
+The event body is written by its own `JsonMapper`, separate from the HTTP one, so a `spring.jackson.*`
+setting can't change this contract. Instants are ISO-8601 strings, amounts are plain JSON numbers with
+scale 2, and fields appear in the order listed below.
 
 Every message uses this envelope:
 ```json
@@ -287,6 +297,13 @@ The full test plan is Stage 4 (`docs/test-plan.md`). The design commits to these
 - **Idempotency keys** on POST, so a retried request can't post twice.
 - **Pagination** on GET transactions.
 - **`schemaVersion` in the envelope**, once a second consumer exists.
+- **Demo queue:** the 10,000-message, drop-head cap is a stopgap. Alternatives:
+  - a RabbitMQ **stream** (`x-queue-type=stream`) with size or age retention, so history can be
+    replayed rather than dropped;
+  - no demo queue outside dev, where only real consumers' own queues exist.
+
+  Either one means deleting the existing queue, because RabbitMQ won't change a declared queue's
+  arguments.
 - **Outbox:** batch deletes or partitioning at high volume; `LISTEN/NOTIFY` to cut publish latency.
 - **Hot accounts:** a single balance row serialises its writers. At very high TPS on one account,
   consider sharded sub-balances.
