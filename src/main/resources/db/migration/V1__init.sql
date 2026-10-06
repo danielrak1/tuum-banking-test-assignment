@@ -32,4 +32,3 @@ CREATE TABLE outbox_event (
     payload     jsonb        NOT NULL,
     created_at  timestamptz  NOT NULL DEFAULT now()
 );
--- guard probe, reverted next commit
