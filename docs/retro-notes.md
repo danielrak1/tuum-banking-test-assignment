@@ -129,6 +129,7 @@ Three gates in `.claude/settings.json`, scripts in `.claude/hooks/`. Each was tr
 - **setup-gradle's cache is read-only off `main`**: both PR runs logged "Gradle User Home cache not found" and saved nothing; the cache fills on the first push to `main`.
 - **`check` takes about 2.6× longer on the runner**: 174 s and 179 s, against about 67 s locally.
 - **`compose up --build` took 87 s every run**: the Dockerfile's BuildKit cache mount doesn't persist between runners.
+- **No branch protection on a free private repo**: the protection and rulesets APIs return 403, so `migration-guard` can't be a required check and a red PR can still be merged.
 - **`gh run list --commit` needs the full SHA**: a short SHA matched nothing, without an error, so a wait loop polled forever.
 
 ## Skills
