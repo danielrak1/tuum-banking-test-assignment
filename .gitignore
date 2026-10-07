@@ -17,3 +17,6 @@ build/
 
 # Claude Code: personal settings stay local, shared settings are committed
 .claude/settings.local.json
+
+# /session-report output
+session-report-*.html

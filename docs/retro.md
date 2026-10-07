@@ -1,118 +1,108 @@
 # Retro: the AI-native SDLC run on the account service
 
-Stage 6 of [`sdlc-plan.md`](sdlc-plan.md). It distils the raw [`retro-notes.md`](retro-notes.md) and a
-`session-report` over every Claude Code transcript for this project (2026-10-02 → 2026-10-07).
+Stage 6 of [`sdlc-plan.md`](sdlc-plan.md). Sources: the raw [`retro-notes.md`](retro-notes.md), the PR
+descriptions and plan files, CI runs, and a `session-report` over this project's Claude Code
+transcripts (2026-10-02 → 2026-10-07: 12 PRs over 4 working days).
 
 ## Effort
 
-Active time means time between transcript events, with gaps over 5 minutes left out (the session-report
-rule). It counts the main sessions only. Stage boundaries are the merge commits. Tokens include subagents.
+Active time counts main sessions only, skipping gaps over 5 min. Prompts include slash commands.
+Tokens include subagents. Each stage ends at its last merge.
 
 | Stage | Active | Tokens | Prompts | Subagent runs | Delivered |
 |---|---|---|---|---|---|
 | 1. Plan | 0.6 h | 7 M | 37 | 0 | `intent.md`, `sdlc-plan.md` |
 | 2. Design | 0.5 h | 4 M | 13 | 2 | `design.md`, ADRs 0001–0004 |
-| 3. Build | 5.1 h | 153 M | 150 | 58 | PRs #1–#7: 4 endpoints, outbox, errors, Docker, review agents |
+| 3. Build | 5.1 h | 153 M | 150 | 58 | PRs #1–#7: four endpoints, outbox, errors, Docker, review agents |
 | 4. Test | 1.4 h | 47 M | 38 | 5 | PRs #8–#9: contract check, `verify`, k6 load test |
 | 5. Deploy | 0.8 h | 9 M | 34 | 3 | PRs #10–#11: three hooks, CI |
-| **Total** | **8.4 h** | **≈ 220 M** | **≈ 270** | **68** | 11 PRs over 5 calendar days |
+| **Total** | **8.4 h** | **≈ 220 M** | **272** | **68** | PR #12 (CI follow-up) is Stage 6 |
 
-- **Build took 61% of the time and 69% of the tokens.** The four endpoints were built as vertical
-  slices, each with its own review round, so most of the review cost also sits in Build.
-- **Cache hit rate was 95.5%.** Only 12 prompts broke the cache by more than 100 k tokens.
-- **Subagents used 20% of all tokens.** `general-purpose` made 47 of the 68 calls (33 M tokens), more
-  than all the named agents combined. The named ones (`test-writer`, `banking-reviewer`,
-  `spec-checker`) came late, and they were cheaper per call.
-- **The three most expensive prompts were stage kickoffs** (13.5 M, 9.1 M and 7.3 M tokens). Each
-  started a long session that read the plan, built, reviewed and fixed.
+- **Build took 61% of the time and 70% of the tokens**, review included: each endpoint was a slice
+  with its own review.
+- **The cache hit rate was 95.5%.** The three costliest prompts were stage kickoffs (13.5, 9.1 and
+  7.3 M tokens).
+- **Subagents used 20% of the tokens.** `general-purpose` made 47 of the 68 calls, at 693 k tokens per
+  call. Per call, `banking-reviewer` (267 k) and `spec-checker` (399 k) cost far less, and `test-writer`
+  (630 k) a little less.
 
 ## Outcome
 
-- **Tests:** 204 tests on Testcontainers (real Postgres and RabbitMQ). Coverage is **95.9% of lines and
-  89.3% of branches**; the gate is 80% for both. The contract check covers every request and error in
-  the PDF, plus the events.
-- **Throughput** ([`performance.md`](performance.md)): about **7,400 transactions/s** spread across
-  accounts (p95 13 ms), and **2,300/s** on one hot account (p95 32 ms). The outbox is the limit: with
-  one confirm per event, events keep up only below about 575–1,650 TPS. Above that they arrive late,
-  but none are lost.
-- **CI:** about 4.5 min per PR. `check` takes 170–180 s there, about 2.6× longer than on the laptop.
+- **Tests:** 204 on real Postgres and RabbitMQ. Coverage: **95.9% of lines, 89.3% of branches** (gate
+  80%). The contract check passes.
+- **Throughput** ([`performance.md`](performance.md)):
+  - **≈ 7,400 transactions/s** spread over 1,000 accounts (p95 13 ms);
+  - **≈ 2,300/s** on one hot account (p95 32 ms);
+  - events keep up only below ≈ 575–1,650 TPS. Above that they arrive late, but none are lost.
+- **CI:** 3.8–5.0 min per PR run. `check` took 169–179 s on a cold Gradle cache and 124 s on a warm
+  one.
 
 ## Review findings by category
 
-Every PR got one review round. Counts come from the PR descriptions.
+Counts come from the PR descriptions and plan files. Doc fixes aren't counted.
 
-| Category | Findings | Worst example |
+| Category | Findings (source) | Worst |
 |---|---|---|
-| API contract and input edge cases | ≈ 15 (PR #2: 5, PR #3: A–J) | **Finding A:** an `Accept: application/xml` debit committed, then returned 406. A client retry double-debits. This was the only finding that lost money. |
-| Event ordering and delivery | 3 | **banking-reviewer F1:** the poller sent a whole batch before the confirms, so a nack reordered one balance's events. Three earlier reviews missed it. |
-| Stale or overclaiming docs | ≈ 12 | A false ADR-0001 claim about trailing zeros. Black-box tests found it, not reviewers. |
-| Scripts, hooks and CI | ≈ 20 | A hook timeout fails open; CI cancels runs on `main` (PR #11 finding 2, still open). |
+| API contract, input edge cases | 18: PR #2 (6 fixed, 2 deferred), PR #3 A–J (10) | PR #3 **A**: an XML `Accept` header got a 406 *after* the debit committed, so a retry double-debits |
+| Event delivery, outbox | 8: PR #4 SF-1–6 and CR-1, PR #7 F1 | PR #7 **F1**: a nack let later events of one balance overtake it. Three earlier reviews missed it |
+| Scripts, hooks, CI | 20: PR #8 (4), #9 (5), #10 (2), #11 (9) | PR #10: without `jq`, every hook let its input through |
+| No findings | PR #5, #6 (`/code-review low`) and the PR #9 query fold | |
 
-- **The domain reviewer earned its cost.** `banking-reviewer` found the ordering bug on its first run,
-  because it checks against ADR-0003's rule rather than looking for generic bugs.
-- **Black-box tests found what reviews missed.** `test-writer` found the lenient UUID parsing and the
-  false ADR claim, because it tests the spec and never reads the code.
-- **Both bugs that could lose money or misorder events (A and F1) were fixed in the PR that found them.**
+- **Specific checks beat general ones.** `banking-reviewer` found F1 by checking against ADR-0003.
+  `test-writer` tests only the spec, and found lenient UUID parsing and a false claim in ADR-0001.
+- **A and F1 were fixed in the PR that found them.** A file-scoped review would have missed A: it was
+  in content negotiation, not the money code.
 
-## Hooks
+## Hooks and gates
 
-Three gates went live in Stage 5. Each was triggered once on purpose and blocked as designed: 4 blocks
-in all, counting gate 2's re-run after its review fixes. No block was unplanned, but the gates only ran
-for the final day.
-
-The review of the hooks mattered more than the gates themselves. It found three ways they could fail
-open:
-- stale JUnit XML named the wrong test;
-- without `jq`, every input passed;
-- a timeout let the commit through.
-
-All three are fixed. Bash edits still bypass the file gates. The CI migration guard covers that gap
-for migrations, but only on PRs, and it can't be a required check on a private free-plan repo.
+- **Blocks:** 3, all planned:
+  - gate 3 (a migration edit) once;
+  - gate 2 (`check` before a commit) twice: the trigger test, then a re-run after the review fixes.
+- **Gate 1** (compile) runs after the edit, so it can't block. It reported the planted error in 0.5 s.
+- **The CI guard** went red on a deliberate V1 edit. `verify` stayed green on the same edit, because
+  every test DB starts empty.
+- **Gaps:**
+  - Bash edits bypass gates 1 and 3.
+  - The CI guard covers PRs only.
+  - With no branch protection on a free private repo, a red PR can still be merged.
 
 ## Where Claude needed steering
 
-- **Skipping ahead.** Stage 2 was nearly skipped, because the session was "ready to code" with the
-  design only in chat. In task 2, the plan dropped instructions that had been given in the request.
-  Plan mode caught both.
-- **Confident wrong claims.**
-  - An ADR stated library behaviour as fact.
-  - The session said every commit would pay a minute of `check`, but it was 1 s when up to date.
-  - It called a guard "a loud failure" when it wasn't.
-
-  Measuring or reading the source corrected each one. None was corrected by argument.
+- **Racing ahead of the process.** Claude was ready to code before the design was committed. A plan
+  dropped instructions given in the request. Plan mode and pauses caught both.
+- **Stating guesses as facts.** These included a library behaviour written into an ADR, a hook's cost
+  ("a minute per commit"; it was 1 s), and a guard's failure mode. Each was doubted, then settled by
+  measuring or reading the source.
 - **Bending a rule under pressure.** An agent commented out an assertion while debugging, and said so.
-  A rule in `test-writer.md` now forbids it.
-- **Cost defaults.** `/code-review` with no level reused the last one and ran 10 agents. The session
-  limit was hit once, at the end of task 3.
-- **Commit discipline.** The user had to ask to see the review findings before a commit. That is now
-  a standing rule in memory.
+  `test-writer.md` now forbids it.
+- **Defaults that cost.** `/code-review` with no level reused the last one and ran 10 agents. One
+  session hit the usage limit.
+- **Committing too eagerly.** The user had to ask to see review findings before a commit. That is now a
+  standing rule.
 
 ## What to change next time
 
-1. **Write named agents early.** A narrow `test-writer` or reviewer on `sonnet` costs less than
-   `general-purpose`, and does the job better.
-2. **Start a fresh session per task, with a plan file.** This keeps kickoff prompts small, and lets a
-   session survive the usage limit.
-3. **Keep design.md as the contract, and short.** The tests can't see the ADRs, so a rule that lives
-   only in an ADR goes untested. The ADR template was heavier than four endpoints needed.
-4. **Turn every rule that must be remembered into a test or a gate**, as was done for
-   `@NotFoundCode`, the UUID binder and migrations. Then prove each gate by making it fail.
-5. **Always pass an explicit review level, and scope reviews by risk, not by file count.** Finding A
-   was in content negotiation, not in the money code.
-6. **Close the review loop before merging.** PR #11 was merged with its 8 findings open (below).
+1. **Write narrow, named reviewers early**, each tied to one set of rules. They cost less per call than
+   `general-purpose`, and they found the two worst bugs.
+2. **Start a fresh session per task, with a plan file.** This keeps kickoff prompts small, and lets work
+   survive the usage limit.
+3. **Keep `design.md` as the short contract.** Tests can't see the ADRs, and the ADR template was heavier
+   than four endpoints needed.
+4. **Turn each rule that must be remembered into a test or a gate**, then prove it by making it fail.
+5. **Always pass a review level, and scope by risk, not by file.**
+6. **Close the review loop before merging.** PR #11 was merged before its 9 findings were acted on.
+   PR #12 fixed 5 of them and this PR one more; the other 3 were skipped on purpose.
 
 ## Carried forward
 
-- **PR #11 review, still open:**
-  - the guard doesn't run on pushes to `main`;
-  - `cancel-in-progress` also cancels runs on `main`;
-  - a `T` (type change) status passes the guard;
-  - annotations break on paths with spaces;
-  - small doc drift in `sdlc-plan.md` and `test-plan.md`, and a missing CI line in `CLAUDE.md`.
-- **From the notes:**
-  - idempotency keys (motivated by finding A);
-  - a 500 on balance overflow;
-  - full stack traces in outbox WARN logs;
-  - a dead-letter path for poison rows, which conflicts with per-balance order;
-  - RabbitMQ policies instead of queue arguments.
-- **Stage 6, still to do:** the README and the `engineering:deploy-checklist` pass.
+- **Product:**
+  - idempotency keys (finding A);
+  - a clean error instead of a 500 on balance overflow;
+  - shorter outbox WARN logs;
+  - a dead-letter path, which conflicts with per-balance order;
+  - RabbitMQ policies.
+- **CI, skipped:** the guard on pushes to `main`, annotations for paths with spaces, SHA-pinned actions.
+- **Stage 6:**
+  - done: this retro and `/revise-claude-md`;
+  - to do: the README;
+  - dropped: the deploy-checklist (no deploy target).
