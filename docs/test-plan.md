@@ -18,7 +18,7 @@ In the tables below:
 | **Unit** | Logic no HTTP request can reach | `ApiExceptionHandlerTest` (500 paths, type mismatches), `EventJsonTest` (the §5 bytes), `BackoffTest`, `FailureLogTest` | ms | `./gradlew check` |
 | **Integration** | The API, DB and broker together: every §2/§3/§5 rule, black-box over HTTP, with events read from `banking.events.all` | `*IT` on Testcontainers (Postgres 18, `rabbitmq:4-management`), one shared Spring context | ~2 min in total | `./gradlew check` |
 | **Convention** | Rules that would otherwise have to be remembered | `NotFoundCodeConventionTest` (every UUID path handler has `@NotFoundCode`; path variable before body) | ms | `./gradlew check` |
-| **Contract** | The packaged app as a reviewer runs it: image, compose, env config, Flyway on an empty DB, then every PDF request and error, plus events | `scripts/contract-check.sh` against `docker compose up --build --wait` | ~20 s, plus the image build | `verify`, and CI (Stage 5) |
+| **Contract** | The packaged app as a reviewer runs it: image, compose, env config, Flyway on an empty DB, then every PDF request and error, plus events | `scripts/contract-check.sh` against `docker compose up --build --wait` | ~20 s, plus the image build | `verify`, and CI (`.github/workflows/ci.yml`) |
 | **Load** | Throughput (TPS, p95) of create-transaction, spread over 1,000 accounts and on one hot account, plus the outbox lag under load | `scripts/load-test.sh` (k6 from its Docker image, on a fresh `banking-perf` stack per run); results in `docs/performance.md` | ~3.5 min per run | by hand, for the README |
 | **Manual** | What automation doesn't cover: a real broker outage, a restart that keeps messages, the Swagger UI | the task plans' "Manual check" sections | – | per task |
 
@@ -76,7 +76,7 @@ rejected request wrote no event and no row.
 | 2 | Coverage ≥ 80%, the build fails below it | JaCoCo gate in `build.gradle`: lines and branches ≥ 0.80, wired into `check`, with only `BankingApplication` (main) excluded. |
 | 3 | Balances never go negative under concurrency | `BalanceConcurrencyIT.concurrentOutsSucceedExactlyFloorOfBalanceOverAmountAndNeverGoNegative` (50 × OUT 7.00 on 100.00: exactly 14 succeed, final 2.00) and `concurrentMixedInsAndOutsReconcileAsConsistentRunningBalance` (the ledger reconciles; `balance.updated` arrives in `seq` order). |
 | 4 | Events are never lost | `EventDeliveryIT` (write while the broker is paused; the events arrive after it is back). Plus Outbox.`keepsRowsPendingThroughAConfirmTimeout…` (rows stay until confirmed), `neverSendsALaterRowWhileAnEarlierOneIsNacked` (a real nack: no later row overtakes it) and `publishesNothingWhileAnotherInstanceHoldsTheLock…` (two instances). |
-| 5 | A fresh clone plus `docker compose up --build` works | `verify`: an isolated stack from empty volumes becomes healthy and passes C01–C20. CI runs the same in Stage 5. |
+| 5 | A fresh clone plus `docker compose up --build` works | `verify`: an isolated stack from empty volumes becomes healthy and passes C01–C20. CI (`.github/workflows/ci.yml`) runs the same `verify.sh` on every PR. |
 | 6 | The README covers build and run, choices, TPS, scaling and AI | Not a test. Stage 6, reviewed against the PDF by `spec-checker`. |
 
 ## 5. Contract cases (`scripts/contract-check.sh`)
