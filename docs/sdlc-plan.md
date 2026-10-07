@@ -17,8 +17,8 @@ then commits it.
 | 2. Design | ✅ Done | `docs/design.md`, `docs/adr/*.md` |
 | 3. Build | ✅ Done: tasks 1–6 cover all 7 build items (skeleton + schema PR #1, create/get account PR #2, transactions PR #3, events PR #4, errors PR #5, docker PR #6) | code, `CLAUDE.md`, `.claude/skills/add-endpoint`, `.claude/agents/test-writer.md`, `banking-reviewer.md`, `spec-checker.md` |
 | 4. Test | ✅ Part A (safety net, PR #8): `docs/test-plan.md`, `scripts/contract-check.sh`, `verify` skill. Part B (throughput): `scripts/load-test.sh`, `docs/performance.md`, the existence fold. Balance overflow stays deferred | `docs/test-plan.md`, contract check, `verify`, k6 load test |
-| 5. Deploy | 🟡 Hooks 1–3 (`.claude/settings.json`, `.claude/hooks/`), each seen blocking. CI (PR #11): `verify.sh` plus a migration guard; the guard seen failing. PR review loop to do | hooks, PR review loop, `.github/workflows/ci.yml` |
-| 6. Maintain | ⬜ | `docs/retro.md`, final README |
+| 5. Deploy | 🟡 Hooks 1–3 (`.claude/settings.json`, `.claude/hooks/`), each seen blocking. CI (PR #11, follow-ups in PR #12): `verify.sh` plus a migration guard; the guard seen failing. PR review loop to do | hooks, PR review loop, `.github/workflows/ci.yml` |
+| 6. Maintain | 🟡 `session-report`, `docs/retro.md` and `/revise-claude-md` done. README to do | `docs/retro.md`, final README |
 
 ## Environment
 - Apple M5 Pro, 48 GB · Temurin 25.0.4.1 (arm64) · Docker 29.8.1 / Compose v5.5.1 · gh 2.102.0
@@ -156,14 +156,14 @@ then commits it.
     then reverted.
 
 ## Stage 6: Maintain
-- Run `session-report` / `explain-usage` to see where the effort went.
-- Write `docs/retro.md` covering:
+- ✅ Run `session-report` / `explain-usage` to see where the effort went.
+- ✅ Write `docs/retro.md` covering:
   - time per stage, coverage %, TPS
   - review findings by category
   - how often the hooks blocked
   - where Claude needed steering
   - what to change next time
-- Run `/revise-claude-md`.
+- ✅ Run `/revise-claude-md`.
 - Finish the README with every deliverable the PDF asks for: build and run, key choices, TPS, horizontal scaling, AI usage.
   Future work to list there: idempotency keys, and a version field in `balance.updated` (design.md §9).
   Also note that health serves as both liveness and readiness, and that ports 5432, 5672, 15672 and 8080
@@ -174,7 +174,7 @@ then commits it.
 - `./gradlew check` is green, with line and branch coverage ≥ 80% enforced.
 - The contract check passes. The concurrency test and the "events never lost" test pass.
 - Events can be seen in the RabbitMQ UI (localhost:15672).
-- The TPS figure is recorded. CI is green on the final PR. Every hook has been seen blocking.
+- The TPS figure is recorded. CI is green on the final PR. Every hook has been seen working (gate 1 reports, it can't block).
 - The README and `docs/retro.md` are complete.
 - The repo is accessible to the assignment's reviewers (PDF, Handover): N/A, because this is a practice
   run and is not submitted.

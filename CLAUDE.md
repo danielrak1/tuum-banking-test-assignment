@@ -28,6 +28,8 @@ Hooks (`.claude/settings.json`, scripts in `.claude/hooks/`) gate the work: a `.
 `git commit` runs `./gradlew check` first (about 1 min after a code change, about 1 s when check is
 UP-TO-DATE; log in `build/hooks/`), and an edit to a committed
 `V*.sql` is blocked. A block is a real failure: fix the cause, never route around the gate with a Bash edit.
+CI (`.github/workflows/ci.yml`) runs `verify.sh` on PRs and `main` (step logs in `build/verify/`, CI artifact `verify-logs`).
+On PRs it fails any migration change but an addition; `verify` can't catch one (empty DB). To trip a gate on purpose, the user makes the edit (`! …`).
 
 ## Stack
 Java 25 · Spring Boot 4.1 (`spring-boot-starter-webmvc`, Jackson 3 = `tools.jackson`) · MyBatis
